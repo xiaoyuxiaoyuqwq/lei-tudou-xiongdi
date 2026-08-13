@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>星渊幸存者 · 游戏策划书</title>
+<style>
+  :root{
+    --bg:#05060f; --panel:#0c1020; --panel2:#11162b; --line:#1e2944;
+    --txt:#cbd5e1; --dim:#7c8aa5; --cyan:#22d3ee; --pink:#f472b6;
+    --amber:#fbbf24; --purple:#a78bfa; --green:#86efac;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:
+      radial-gradient(1200px 700px at 80% -10%, rgba(167,139,250,.10), transparent 60%),
+      radial-gradient(900px 600px at 0% 10%, rgba(34,211,238,.08), transparent 55%),
+      var(--bg);
+    color:var(--txt);font-family:"Segoe UI",-apple-system,"PingFang SC","Microsoft YaHei",monospace;
+    line-height:1.7;font-size:15px}
+  a{color:var(--cyan);text-decoration:none}
+  /* 侧边目录 */
+  #toc{position:fixed;top:0;left:0;width:248px;height:100vh;overflow-y:auto;
+    background:linear-gradient(180deg,#0a0e1c,#070a16);border-right:1px solid var(--line);
+    padding:22px 16px;font-size:13px}
+  #toc h2{font-size:13px;color:var(--cyan);letter-spacing:2px;margin:0 0 14px;
+    text-transform:uppercase}
+  #toc a{display:block;color:var(--dim);padding:6px 10px;border-radius:8px;
+    border-left:2px solid transparent;transition:.18s}
+  #toc a:hover{color:var(--txt);background:var(--panel2);border-left-color:var(--cyan)}
+  #toc a.sub{padding-left:22px;font-size:12px}
+  /* 主体 */
+  main{margin-left:248px;max-width:980px;padding:46px 54px 120px}
+  .hero{border:1px solid var(--line);border-radius:18px;padding:34px 36px;
+    background:linear-gradient(135deg,rgba(34,211,238,.06),rgba(244,114,182,.06));
+    box-shadow:0 0 60px rgba(34,211,238,.08) inset}
+  .hero h1{margin:0 0 6px;font-size:30px;
+    background:linear-gradient(90deg,var(--cyan),var(--pink),var(--amber));
+    -webkit-background-clip:text;background-clip:text;color:transparent;letter-spacing:1px}
+  .hero .sub{color:var(--dim);font-size:14px;margin-bottom:14px}
+  .hero .meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+  .tag{font-size:12px;padding:3px 10px;border-radius:999px;border:1px solid var(--line);
+    color:var(--cyan);background:rgba(34,211,238,.07)}
+  .tag.p{color:var(--pink);background:rgba(244,114,182,.07)}
+  .tag.a{color:var(--amber);background:rgba(251,191,36,.07)}
+  .tag.u{color:var(--purple);background:rgba(167,139,250,.07)}
+  .card{border:1px solid var(--line);border-radius:16px;padding:26px 30px;margin:26px 0;
+    background:var(--panel);position:relative;overflow:hidden}
+  .card::before{content:"";position:absolute;top:0;left:0;width:100%;height:3px;
+    background:linear-gradient(90deg,var(--cyan),var(--pink))}
+  .card h2{margin:0 0 14px;font-size:22px;color:#e8eefc}
+  .card h3{margin:22px 0 10px;font-size:16px;color:var(--cyan)}
+  .card h4{margin:16px 0 8px;font-size:14px;color:var(--amber)}
+  p{margin:10px 0}
+  .lead{color:var(--dim)}
+  ul,ol{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  code{background:var(--panel2);border:1px solid var(--line);border-radius:6px;
+    padding:1px 7px;color:var(--green);font-size:13px}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13px}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:center}
+  th{background:var(--panel2);color:var(--cyan);font-weight:600}
+  tbody tr:nth-child(even){background:rgba(255,255,255,.02)}
+  td:first-child,th:first-child{text-align:left}
+  .callout{border-left:3px solid var(--amber);background:rgba(251,191,36,.06);
+    padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0;color:#fde9b8}
+  .callout.c{border-color:var(--cyan);background:rgba(34,211,238,.06);color:#bfeef7}
+  .callout.p{border-color:var(--pink);background:rgba(244,114,182,.06);color:#fbd3e6}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:14px 0}
+  .kpi{border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--panel2)}
+  .kpi b{display:block;font-size:20px;color:var(--cyan);margin-bottom:2px}
+  .kpi span{font-size:12px;color:var(--dim)}
+  .pill{display:inline-block;font-size:12px;padding:2px 9px;border-radius:999px;margin:2px 3px}
+  .pill.done{color:var(--green);border:1px solid rgba(134,239,172,.4);background:rgba(134,239,172,.08)}
+  .pill.todo{color:var(--amber);border:1px solid rgba(251,191,36,.4);background:rgba(251,191,36,.08)}
+  .flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:14px 0;font-size:13px}
+  .flow .node{border:1px solid var(--line);border-radius:10px;padding:8px 12px;background:var(--panel2);color:var(--txt)}
+  .flow .arr{color:var(--cyan);font-weight:700}
+  footer{margin-left:248px;padding:24px 54px 60px;color:var(--dim);font-size:13px;
+    border-top:1px solid var(--line)}
+  @media(max-width:820px){#toc{display:none}main,footer{margin-left:0;padding-left:20px;padding-right:20px}}
+</style>
+</head>
+<body>
+
+<nav id="toc">
+  <h2>目录</h2>
+  <a href="#t1">1 · 核心玩法循环</a>
+  <a href="#t2">2 · 敌人系统</a>
+  <a href="#t3">3 · 战机成长系统</a>
+  <a href="#t4">4 · 僚机 / 舰队</a>
+  <a href="#t5">5 · 掉落规则</a>
+  <a href="#t6">6 · 关卡目标与难度</a>
+  <a href="#t7">7 · UI 与美术方向</a>
+  <a href="#t8">8 · 创意建议与取舍</a>
+  <a href="#t9" class="sub">8.1 阵型切换</a>
+  <a href="#t9" class="sub">8.2 精英词缀</a>
+  <a href="#t9" class="sub">8.3 通关结算</a>
+  <a href="#t9" class="sub">8.4–8.6 其他</a>
+</nav>
+
+<main>
+  <div class="hero">
+    <h1>星渊幸存者 · STARFALL SURVIVORS</h1>
+    <div class="sub">一款《吸血鬼幸存者》式的太空战机 Roguelite — 游戏策划书</div>
+    <div class="meta">
+      <span class="tag">视角：俯视 2.5D 星空</span>
+      <span class="tag p">美术：赛博霓虹</span>
+      <span class="tag a">标准局：≈15 分钟</span>
+      <span class="tag u">原型：index.html（29/29 自检）</span>
+    </div>
+  </div>
+
+  <!-- 1 -->
+  <section class="card" id="t1">
+    <h2>1 · 核心玩法循环</h2>
+    <p class="lead">"你只管走位，开火交给战机会自己来。" 借鉴《吸血鬼幸存者》的"自动战斗 + 手动走位"内核，把敌人换成太空虫群 / 敌方舰队，把法杖换成舰载武器，把大蒜换成斥力立场。</p>
+    <h3>单局循环（60 秒视角）</h3>
+    <div class="flow">
+      <span class="node">移动闪避</span><span class="arr">→</span>
+      <span class="node">自动索敌开火</span><span class="arr">→</span>
+      <span class="node">清怪掉落晶体</span><span class="arr">→</span>
+      <span class="node">磁力拾取</span><span class="arr">→</span>
+      <span class="node">升级三选一</span><span class="arr">→</span>
+      <span class="node">构筑变强</span><span class="arr">→</span>
+      <span class="node">撑过下一波</span>
+    </div>
+    <div class="grid">
+      <div class="kpi"><b>低门槛</b><span>只有移动是手动输入，开火 / 拾取全自动</span></div>
+      <div class="kpi"><b>高深度</b><span>深度来自 build 构筑，而非手速</span></div>
+      <div class="kpi"><b>滚雪球</b><span>前期谨慎 → 中期割草 → 后期被弹幕倒逼取舍</span></div>
+      <div class="kpi"><b>死亡毕业</b><span>单局必结束，靠解锁 / 图鉴提供长期目标</span></div>
+    </div>
+    <h3>节奏分段</h3>
+    <ul>
+      <li><b>0–3 分钟 播种期</b>：敌人稀疏，熟悉走位，积累第一把副武器。</li>
+      <li><b>3–9 分钟 成长期</b>：敌潮变密，出现精英，build 雏形成型。</li>
+      <li><b>9–14 分钟 割草期</b>：满配弹幕，屏幕被敌人晶体填满，靠走位维持输出面。</li>
+      <li><b>15 分钟 决战期</b>：DREADNOUGHT 母舰登场，三阶段高压战。</li>
+    </ul>
+  </section>
+
+  <!-- 2 -->
+  <section class="card" id="t2">
+    <h2>2 · 敌人系统</h2>
+    <h3>2.1 敌人类型（6 类）</h3>
+    <table>
+      <tr><th>代号</th><th>名称</th><th>HP</th><th>速度</th><th>伤害</th><th>经验</th><th>行为 AI</th></tr>
+      <tr><td><code>charger</code></td><td>突击者</td><td>18</td><td>6.5</td><td>8</td><td>1</td><td>直线冲锋：锁定玩家持续逼近</td></tr>
+      <tr><td><code>orbiter</code></td><td>游隼</td><td>30</td><td>8.0</td><td>10</td><td>2</td><td>环绕逼近：保持中距绕圈伺机贴脸</td></tr>
+      <tr><td><code>sniper</code></td><td>狙击手</td><td>22</td><td>4.0</td><td>12</td><td>4</td><td>远程蓄力：停外缘蓄力发射高速弹</td></tr>
+      <tr><td><code>splitter</code></td><td>孢子母舰</td><td>55</td><td>5.0</td><td>12</td><td>6</td><td>死亡分裂：阵亡裂出 2 只 <code>mini</code></td></tr>
+      <tr><td><code>mini</code></td><td>孢子</td><td>8</td><td>9.0</td><td>6</td><td>1</td><td>高速小体积，由母舰分裂产生</td></tr>
+      <tr><td><code>elite</code></td><td>精英</td><td>900</td><td>5.5</td><td>20</td><td>60</td><td>强化体，W5/W10 强制出现，可叠词缀(§8)</td></tr>
+    </table>
+
+    <h3>2.2 刷怪机制</h3>
+    <ul>
+      <li><b>屏幕外环形生成</b>：所有敌人都在半径 <code>SPAWN_R=46</code>（约 1.5 屏外）随机角度生成，玩家看不到刷怪过程，只看到敌潮从四周涌来——"被包围"压迫感的来源。</li>
+      <li><b>波次权重表</b> <code>WAVE_MIX</code>：每波对 4 种基础敌定义刷新权重，开局纯突击者，中段混入游隼/狙击，后段孢子母舰占比上升。</li>
+      <li><b>BOSS 战停刷</b>：母舰降临后由 <code>Boss</code> 模块接管杂兵召唤，避免信息过载。</li>
+      <li><b>性能保障</b>：敌人走对象池（上限 200）+ 空间哈希网格（格边长 5），把 ~36k 对/帧暴力检测降到 ~1k 对/帧，稳定同屏 100+ 敌人。</li>
+    </ul>
+
+    <h3>2.3 时间驱动的成长缩放（核心公式）</h3>
+    <table>
+      <tr><th>参数</th><th>公式</th><th>W1</th><th>W5</th><th>W10</th><th>W15</th></tr>
+      <tr><td>同屏上限 <code>cap</code></td><td>min(40+9w,160)</td><td>49</td><td>85</td><td>130</td><td>160</td></tr>
+      <tr><td>刷新间隔 <code>iv</code></td><td>max(0.18,1.10−0.06w) 秒</td><td>1.04</td><td>0.80</td><td>0.50</td><td>0.20</td></tr>
+      <tr><td>每批数量</td><td>1+floor(w/3)</td><td>1</td><td>2</td><td>4</td><td>6</td></tr>
+      <tr><td>血量倍率 <code>hpMul</code></td><td>1+0.18w+0.02w²</td><td>1.20×</td><td>2.40×</td><td>4.80×</td><td>8.20×</td></tr>
+      <tr><td>伤害倍率 <code>dmgMul</code></td><td>1+0.09w</td><td>1.09×</td><td>1.45×</td><td>1.90×</td><td>2.35×</td></tr>
+      <tr><td>速度倍率 <code>spdMul</code></td><td>min(1+0.015w,1.25)</td><td>1.02×</td><td>1.08×</td><td>1.15×</td><td>1.23×</td></tr>
+    </table>
+    <div class="callout c">设计意图：<code>hpMul</code> 用二次曲线，使后期敌人"抗揍"程度陡增，逼迫中期把 DPS 堆起来；<code>iv</code> 线性压缩到下限 0.18s，制造"弹幕海"观感但不失控。</div>
+
+    <h3>2.4 波次敌种权重（节选）</h3>
+    <table>
+      <tr><th>波次</th><th>权重构成</th></tr>
+      <tr><td>W1</td><td>charger 100</td></tr>
+      <tr><td>W3</td><td>charger 70 / orbiter 30</td></tr>
+      <tr><td>W5 ★精英</td><td>charger 45 / orbiter 30 / sniper 25</td></tr>
+      <tr><td>W7</td><td>charger 35 / orbiter 28 / sniper 22 / splitter 15</td></tr>
+      <tr><td>W10 ★精英</td><td>charger 25 / orbiter 25 / sniper 25 / splitter 25</td></tr>
+      <tr><td>W15 ★BOSS</td><td>charger 25 / orbiter 25 / sniper 25 / splitter 25</td></tr>
+    </table>
+  </section>
+
+  <!-- 3 -->
+  <section class="card" id="t3">
+    <h2>3 · 战机成长系统</h2>
+    <h3>3.1 等级与经验曲线</h3>
+    <p>拾取晶体累积经验；达标即升级，可<b>一次性结算多级</b>。升级所需经验：</p>
+    <p><code>need(L) = floor(8 + 6·L + 0.55·L^1.55)</code></p>
+    <table>
+      <tr><th>当前等级 L</th><th>升到 L+1 所需</th></tr>
+      <tr><td>1</td><td>15</td></tr><tr><td>5</td><td>44</td></tr>
+      <tr><td>10</td><td>87</td></tr><tr><td>20</td><td>185</td></tr><tr><td>30</td><td>295</td></tr>
+    </table>
+    <div class="callout c">曲线为<b>超线性</b>（指数 1.55）：前期升级频繁（正反馈密集），后期升级缓慢（每级都是重大抉择）。</div>
+
+    <h3>3.2 升级三选一（卡池构成）</h3>
+    <ul>
+      <li><b>新武器</b>（未拥有且槽位 &lt; 4）：权重 35</li>
+      <li><b>武器升级</b>（Lv1→5）：权重 150</li>
+      <li><b>武器进化</b>（Lv5 + 绑定被动 Lv5 + 进化核心）：权重 60，金色稀有</li>
+      <li><b>被动升级</b>（Lv1→5）：已拥有 150 / 未拥有 100</li>
+      <li><b>僚机</b>（数量 &lt; 3）</li>
+    </ul>
+
+    <h3>3.3 武器数值表（Lv1–5 + 进化）</h3>
+    <h4>① 脉冲主炮 cannon（直射）</h4>
+    <table>
+      <tr><th>Lv</th><th>单发伤害</th><th>射速/秒</th><th>弹数</th><th>扩散</th><th>弹速</th></tr>
+      <tr><td>1</td><td>10</td><td>2.5</td><td>1</td><td>0</td><td>30</td></tr>
+      <tr><td>2</td><td>13</td><td>2.8</td><td>1</td><td>0</td><td>30</td></tr>
+      <tr><td>3</td><td>16</td><td>3.1</td><td>2</td><td>0.10</td><td>32</td></tr>
+      <tr><td>4</td><td>20</td><td>3.4</td><td>2</td><td>0.10</td><td>32</td></tr>
+      <tr><td>5</td><td>25</td><td>3.8</td><td>3</td><td>0.17</td><td>34</td></tr>
+      <tr><td>★进化</td><td>30</td><td>4.5</td><td>5</td><td>0.31</td><td>36</td></tr>
+    </table>
+    <h4>② 追踪导弹 missile（自动追踪 + 范围爆伤）</h4>
+    <table>
+      <tr><th>Lv</th><th>伤害</th><th>射速/秒</th><th>弹数</th><th>爆炸半径</th><th>转向</th></tr>
+      <tr><td>1</td><td>25</td><td>0.83</td><td>1</td><td>2.0</td><td>3.14</td></tr>
+      <tr><td>2</td><td>32</td><td>0.91</td><td>1</td><td>2.2</td><td>3.32</td></tr>
+      <tr><td>3</td><td>40</td><td>1.00</td><td>2</td><td>2.4</td><td>3.49</td></tr>
+      <tr><td>4</td><td>50</td><td>1.11</td><td>2</td><td>2.8</td><td>3.67</td></tr>
+      <tr><td>5</td><td>62</td><td>1.25</td><td>3</td><td>3.2</td><td>3.84</td></tr>
+      <tr><td>★进化</td><td>75</td><td>1.00</td><td>6</td><td>4.0</td><td>4.20</td></tr>
+    </table>
+    <h4>③ 棱镜光矛 laser（定向持续光束）</h4>
+    <table>
+      <tr><th>Lv</th><th>DPS</th><th>宽度</th><th>长度</th><th>持续</th><th>冷却</th></tr>
+      <tr><td>1</td><td>30</td><td>0.6</td><td>22</td><td>0.5</td><td>1.5</td></tr>
+      <tr><td>2</td><td>42</td><td>0.7</td><td>26</td><td>0.6</td><td>1.4</td></tr>
+      <tr><td>3</td><td>55</td><td>0.8</td><td>30</td><td>0.7</td><td>1.3</td></tr>
+      <tr><td>4</td><td>72</td><td>1.0</td><td>34</td><td>0.8</td><td>1.2</td></tr>
+      <tr><td>5</td><td>95</td><td>1.2</td><td>40</td><td>1.0</td><td>1.1</td></tr>
+      <tr><td>★进化</td><td>120</td><td>1.3</td><td>42</td><td>1.1</td><td>1.1</td></tr>
+    </table>
+    <h4>④ 斥力立场 aura（环绕自身 + 减速）</h4>
+    <table>
+      <tr><th>Lv</th><th>DPS</th><th>半径</th><th>减速</th><th>牵引</th></tr>
+      <tr><td>1</td><td>12</td><td>4.0</td><td>0</td><td>0</td></tr>
+      <tr><td>2</td><td>17</td><td>4.6</td><td>0</td><td>0</td></tr>
+      <tr><td>3</td><td>23</td><td>5.2</td><td>15%</td><td>0</td></tr>
+      <tr><td>4</td><td>30</td><td>6.0</td><td>15%</td><td>0</td></tr>
+      <tr><td>5</td><td>40</td><td>7.0</td><td>15%</td><td>−3 斥退</td></tr>
+      <tr><td>★进化</td><td>70</td><td>8.0</td><td>20%</td><td>+2 吸引</td></tr>
+    </table>
+
+    <h3>3.4 被动数值表（均上限 Lv5）</h3>
+    <table>
+      <tr><th>代号</th><th>名称</th><th>每级效果</th><th>满级</th></tr>
+      <tr><td><code>speed</code></td><td>推进器</td><td>移速 +8%</td><td>+40%</td></tr>
+      <tr><td><code>rate</code></td><td>冷却器</td><td>攻击间隔 −7%（复利）</td><td>≈ −26%</td></tr>
+      <tr><td><code>crit</code></td><td>瞄准镜</td><td>暴击率 +4% / 暴伤 +15%</td><td>+20% / +75%</td></tr>
+      <tr><td><code>pick</code></td><td>磁力场</td><td>拾取范围 +25%</td><td>+125%</td></tr>
+      <tr><td><code>hp</code></td><td>装甲板</td><td>最大生命 +20（立即回满）</td><td>+100</td></tr>
+      <tr><td><code>armor</code></td><td>复合装甲</td><td>伤害减免 +2</td><td>+10</td></tr>
+    </table>
+    <div class="callout">暴击基准：基础暴击率 5%，暴伤 1.5×。</div>
+
+    <h3>3.5 进化规则（质变）</h3>
+    <p>武器达 Lv5 且<b>对应被动</b>达 Lv5，并持有 ≥1 枚<b>进化核心</b>时，卡池出现金色进化卡：</p>
+    <table>
+      <tr><th>武器</th><th>绑定被动</th><th>进化名</th><th>质变点</th></tr>
+      <tr><td>主炮</td><td>冷却器</td><td>新星连射</td><td>5 弹齐射 + 穿透</td></tr>
+      <tr><td>导弹</td><td>瞄准镜</td><td>蜂群齐射</td><td>6 弹 + 大爆伤</td></tr>
+      <tr><td>光矛</td><td>推进器</td><td>三棱光矛</td><td>三道光束</td></tr>
+      <tr><td>立场</td><td>装甲板</td><td>奇点立场</td><td>吸引 + 超大半径</td></tr>
+    </table>
+    <p><b>进化核心</b>来源：精英掉落 / 通关结算奖励（见 §6、§8）。</p>
+  </section>
+
+  <!-- 4 -->
+  <section class="card" id="t4">
+    <h2>4 · 僚机 / 舰队系统</h2>
+    <h3>4.1 获取与定位</h3>
+    <ul>
+      <li>僚机通过升级卡抽取，单局<b>最多 3 架</b>（<code>WING.maxCount=3</code>）。</li>
+      <li>僚机<b>独立跟随母机</b>、<b>独立索敌开火</b>，是主武器之外的稳定 DPS 与功能补充。</li>
+    </ul>
+    <h3>4.2 机型</h3>
+    <table>
+      <tr><th>代号</th><th>名称</th><th>伤害</th><th>射速</th><th>目标</th><th>职能</th></tr>
+      <tr><td><code>striker</code></td><td>突击僚机</td><td>6</td><td>2.0/s</td><td>最近敌</td><td>高频点射，清杂兵</td></tr>
+      <tr><td><code>warden</code></td><td>守护僚机</td><td>0</td><td>0.25/s</td><td>—</td><td>每 4 秒充 1 层护盾 + 扩拾取</td></tr>
+      <tr><td><code>howitzer</code></td><td>重炮僚机</td><td>22</td><td>0.6/s</td><td>最远敌</td><td>低频高伤 + 命中范围爆炸</td></tr>
+    </table>
+    <h3>4.3 阵型（已实装：可切换）</h3>
+    <p><b>雁形 / 环形 / 纵列</b> 三编队，按 <code>cycleFormation()</code> 实时切换；跟随采用指数平滑（<code>followSmooth=8</code>），柔顺追随而非死贴。</p>
+    <h3>4.4 与主武器的平衡（关键约束）</h3>
+    <div class="callout p">僚机总 DPS 软上限 = <b>0.25 × 主武器 DPS</b>（<code>dpsCapRatio=0.25</code>）</div>
+    <ul>
+      <li>僚机是"补刀 + 功能"（如 warden 护盾），<b>绝不能喧宾夺主</b>替代主武器构筑。</li>
+      <li>软上限防止"堆僚机躺赢"，保证核心策略仍是主武器 × 被动的 build。</li>
+      <li>三机型覆盖"清杂 / 护盾 / 破甲"三角，鼓励按当前弱点选配。</li>
+    </ul>
+  </section>
+
+  <!-- 5 -->
+  <section class="card" id="t5">
+    <h2>5 · 掉落规则</h2>
+    <h3>5.1 经验晶体（分级）</h3>
+    <table>
+      <tr><th>等级</th><th>经验值</th><th>来源</th></tr>
+      <tr><td>小型</td><td>1</td><td>普通敌</td></tr>
+      <tr><td>中型</td><td>5</td><td>游隼 / 狙击</td></tr>
+      <tr><td>大型</td><td>20</td><td>孢子母舰 / 精英 / BOSS</td></tr>
+    </table>
+    <ul>
+      <li><b>磁力拾取</b>：进入拾取范围（基础 3.0，受磁力场被动放大）后自动飞向玩家。</li>
+      <li>场上晶体上限 <code>maxCount=800</code>，超出丢弃最旧，避免无限堆积拖慢性能。</li>
+      <li>晶体寿命 <code>life=45s</code>，临近消失时 <code>blink=30s</code> 闪烁提示。</li>
+    </ul>
+    <h3>5.2 稀有掉落（全局概率）</h3>
+    <table>
+      <tr><th>掉落</th><th>概率</th><th>效果</th></tr>
+      <tr><td>核爆 nuke</td><td>0.15%</td><td>清屏 + 全场巨额伤害</td></tr>
+      <tr><td>修理包 repair</td><td>1.2%</td><td>回复 50% 生命</td></tr>
+      <tr><td>小修理 repairLow</td><td>3.5%</td><td>回复 15% 生命</td></tr>
+      <tr><td>超载 overdrive</td><td>0.8%</td><td>限时攻速/伤害大幅提升</td></tr>
+      <tr><td>磁暴 magnet</td><td>0.6%</td><td>限时全屏吸取晶体</td></tr>
+      <tr><td>力场 barrier</td><td>0.5%</td><td>限时获得护盾</td></tr>
+    </table>
+    <div class="callout">概率刻意压低：稀有掉落是"惊喜烟火"而非"日常补给"，避免冲淡 build 构筑主旋律。</div>
+  </section>
+
+  <!-- 6 -->
+  <section class="card" id="t6">
+    <h2>6 · 关卡目标、失败条件与难度曲线</h2>
+    <h3>6.1 目标与失败</h3>
+    <ul>
+      <li><b>目标（标准局）</b>：存活并推进至<b>第 15 波</b>，击破 <b>DREADNOUGHT 母舰</b> → 任务达成。</li>
+      <li><b>失败</b>：玩家 <code>HP</code> 归零 → 战机损毁。</li>
+      <li><b>无尽模式</b>：通关后解锁，波次无限延伸（每 10 波刷新强化母舰，血量按 <code>1+0.5·(w−15)</code> 放大）。</li>
+    </ul>
+    <h3>6.2 时间 / 难度曲线</h3>
+    <table>
+      <tr><th>波次</th><th>时间</th><th>事件</th><th>敌潮特征</th></tr>
+      <tr><td>1–4</td><td>0–4 min</td><td>—</td><td>稀疏突击者，练走位</td></tr>
+      <tr><td>5</td><td>5 min</td><td><b>精英 ×1</b></td><td>首个高压点</td></tr>
+      <tr><td>6–9</td><td>5–9 min</td><td>—</td><td>四系混编，build 成型</td></tr>
+      <tr><td>10</td><td>10 min</td><td><b>精英 ×2</b></td><td>第二个高压点，弹幕海</td></tr>
+      <tr><td>11–14</td><td>10–14 min</td><td>—</td><td>孢子母舰主导，满屏分裂</td></tr>
+      <tr><td>15</td><td>15 min</td><td><b>BOSS</b></td><td>母舰三阶段决战</td></tr>
+    </table>
+    <h3>6.3 BOSS：DREADNOUGHT 母舰</h3>
+    <div class="grid">
+      <div class="kpi"><b>12000</b><span>HP</span></div>
+      <div class="kpi"><b>4.5</b><span>移动速度</span></div>
+      <div class="kpi"><b>25</b><span>接触伤害</span></div>
+      <div class="kpi"><b>400</b><span>击破经验 + 进化核心</span></div>
+    </div>
+    <table>
+      <tr><th>阶段</th><th>触发</th><th>攻击模式</th></tr>
+      <tr><td>P1</td><td>HP &gt; 66%</td><td>扇形 5 连弹 + 周期召唤突击者</td></tr>
+      <tr><td>P2</td><td>33%–66%</td><td>双旋转激光 + 螺旋 12 弹 + 召唤游隼</td></tr>
+      <tr><td>P3</td><td>&lt; 33%</td><td>环射 20 弹 + 高速导弹 + 召唤孢子母舰，核心濒死闪红</td></tr>
+    </table>
+    <p>BOSS 作为"<b>伪敌人</b>"注册进空间哈希，使其可被玩家所有武器（含光矛 / 立场）命中。</p>
+  </section>
+
+  <!-- 7 -->
+  <section class="card" id="t7">
+    <h2>7 · UI 布局与美术方向</h2>
+    <h3>7.1 HUD 布局（俯视 2.5D）</h3>
+    <pre style="background:#070a16;border:1px solid var(--line);border-radius:10px;padding:14px;font-size:12px;color:var(--dim);overflow:auto">
+┌──────────────────────────────────────────────┐
+│  HP ▓▓▓▓▓▓▓░░ 100/100   ⏱ 12:34   ☠ 1,284    │  ← 顶部状态条
+│  EXP ▓▓▓▓▓▓▓▓▓▓▓▓▓░░░                        │  ← 经验进度条
+│  LV.17   ★核心×1   [W][W][W][W] 武器槽        │
+│            （中央战场：玩家/僚机/敌潮/弹幕）     │
+│  ┌─ BOSS ────────────────┐                    │  ← BOSS 血条（仅决战）
+│  │ ▓▓▓▓▓▓▓▓▓▓▓░░░░  P2    │                    │
+│  └────────────────────────┘                    │
+└──────────────────────────────────────────────┘
+        ┌──────── 升级弹窗（暂停） ────────┐
+        │ [主炮Lv3→4] [推进器Lv2→3] [+重炮僚机] │  ← 三选一
+        └──────────────────────────────────┘</pre>
+    <ul>
+      <li><b>升级弹窗</b>：游戏暂停（<code>state=LEVELUP</code>），三选一，点选即生效并恢复。</li>
+      <li><b>死亡 / 通关结算</b>：显示存活时间、波次、击杀数、build 总览、评价与"无尽模式"解锁按钮。</li>
+    </ul>
+    <h3>7.2 美术方向（赛博霓虹）</h3>
+    <table>
+      <tr><th>要素</th><th>方案</th></tr>
+      <tr><td>背景</td><td>深空 <code>#05060f</code> + 多层视差星点 + 缓慢星云</td></tr>
+      <tr><td>主色板</td><td>青 <code>#22d3ee</code>（友方）· 粉 <code>#f472b6</code>（敌）· 琥珀 <code>#fbbf24</code>（狙击/稀有）· 紫 <code>#a78bfa</code>（孢子/精英）</td></tr>
+      <tr><td>光效</td><td>加性混合 + 三层光晕（Sprite 光晕 + BackSide 外壳 + 拖尾），无后处理也出辉光</td></tr>
+      <tr><td>受击反馈</td><td>敌人命中闪白、玩家受击震屏、死亡爆裂粒子</td></tr>
+      <tr><td>字体</td><td>等宽科技感字体，半透明深色玻璃拟态面板</td></tr>
+    </table>
+    <div class="callout c">性能注意：原型用 three.js r160 UMD（无 EffectComposer），辉光<b>不依赖后处理</b>，纯靠加性精灵 + 外壳实现，确保 file:// 双击即跑且软件渲染也能 60+ FPS。</div>
+  </section>
+
+  <!-- 8 -->
+  <section class="card" id="t8">
+    <h2>8 · 附加创意建议与取舍理由</h2>
+    <p class="lead">以下为原型之外可进一步扩展的方向。每条均给出<b>收益</b>与<b>代价（取舍）</b>，便于排期决策。</p>
+
+    <h3 id="t9">8.1 舰队阵型切换 <span class="pill done">已实装 ✅</span></h3>
+    <ul>
+      <li><b>做法</b>：雁形 / 环形 / 纵列 三阵型实时切换，改变僚机相对母机的位置与朝向。</li>
+      <li><b>收益</b>：用一次按键换来显著战术维度——环形抗压、纵列集火、雁形覆盖，让 3 架僚机各展所长。</li>
+      <li><b>代价</b>：增加"操作记忆负担"，可能稀释"只管走位"的极简内核。</li>
+      <li><b>决断</b>：保留但默认不强制——做成"进阶技巧"而非生存必需，新手可完全无视仍通关。</li>
+    </ul>
+
+    <h3>8.2 精英词缀系统 <span class="pill todo">建议扩展 ⭐</span></h3>
+    <ul>
+      <li><b>做法</b>：精英随机附加 1–2 条词缀，如「迅捷 +速」「硬化 +甲」「分裂 死裂小怪」「诅咒 近身掉血」「充能 被击回血」。</li>
+      <li><b>收益</b>：把固定难点变成每局不同的谜题，极大提升重复可玩性与构筑针对性。</li>
+      <li><b>代价</b>：词缀叠加破坏数值可预测性，可能造"无解局"；需额外 UI 与平衡测试成本。</li>
+      <li><b>决断</b>：值得做，但设上限——单精英词缀 ≤2 条 + 黑名单互斥 + 保底掉落降低挫败。</li>
+    </ul>
+
+    <h3>8.3 通关结算与评价 <span class="pill done">已实装基础版 ✅</span></h3>
+    <ul>
+      <li><b>做法</b>：S/A/B/C 评级（综合存活、波次、击杀、build 完整度、无伤段），奖励进化核心 / 图鉴解锁。</li>
+      <li><b>收益</b>：给单局"句号式"成就感，驱动挑战更高评价，弥补 Roguelite"死亡无积累"空虚感。</li>
+      <li><b>代价</b>：过度评级会诱导"最优解"焦虑，削弱割草爽感。</li>
+      <li><b>决断</b>：评级只给正反馈，不惩罚——不做硬性门槛，保持轻松基调。</li>
+    </ul>
+
+    <h3>8.4 武器进化树可视化 <span class="pill todo">建议扩展 ⭐</span></h3>
+    <ul>
+      <li><b>做法</b>：升级卡与图鉴展示"武器 Lv5 + 绑定被动 Lv5 → 进化"的树状关系，提前预告质变形态。</li>
+      <li><b>收益</b>：降低认知门槛，让玩家有意识规划被动与武器同步养成，而非偶然凑出。</li>
+      <li><b>代价</b>：需额外美术/界面资源；展示过细会剧透随机卡池的惊喜感。</li>
+      <li><b>决断</b>：只展示"已拥有武器"的进化路线，未拥有的保持神秘，平衡规划感与探索感。</li>
+    </ul>
+
+    <h3>8.5 临时增益 BUFF <span class="pill todo">建议扩展 ⭐</span></h3>
+    <ul>
+      <li><b>做法</b>：局内临时增益——拾取特定晶体触发 10s 攻速翻倍、连杀达阈值进入"狂热"。</li>
+      <li><b>收益</b>：制造短促高光时刻，丰富节奏起伏，让割草期不单调。</li>
+      <li><b>代价</b>：临时 buff 与 build 构筑是两套反馈系统，可能让玩家忽视长期构筑；过量特效掩盖战场信息。</li>
+      <li><b>决断</b>：时长控制 10s 内、视觉克制，作为"调味"而非"主菜"。</li>
+    </ul>
+
+    <h3>8.6 无尽模式赛季与图鉴 <span class="pill done">已实装无尽框架 ✅</span></h3>
+    <ul>
+      <li><b>做法</b>：无尽每 10 波刷新强化母舰，配赛季排行榜与敌人/武器图鉴收集。</li>
+      <li><b>收益</b>：把 15 分钟标准局延展为长期追求，图鉴给收集型、排行榜给挑战型玩家目标。</li>
+      <li><b>代价</b>：无尽数值需防指数爆炸导致后期全屏秒杀；赛季重置清空进度引发争议。</li>
+      <li><b>决断</b>：无尽血量用线性偏缓的 <code>1+0.5·(w−15)</code> 而非指数；图鉴/解锁永久，排行榜按赛季滚动。</li>
+    </ul>
+  </section>
+
+  <div class="callout c" style="margin-top:30px">
+    <b>交付清单</b><br>
+    · 策划书：<code>策划书.md</code>（本文件）<br>
+    · 可视化网页：<code>策划书.html</code>（本页，深空霓虹主题）<br>
+    · 可运行原型：<code>index.html</code>（HTML + three.js，29/29 项自检通过）
+  </div>
+</main>
+
+<footer>
+  星渊幸存者 · STARFALL SURVIVORS — 游戏策划书 ｜ 配套原型 index.html（three.js r160 UMD，双击即玩）
+</footer>
+</body>
+</html>
