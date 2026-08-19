@@ -1,0 +1,5364 @@
+
+"use strict";
+
+/* ==================== p2_core.js ==================== */
+/* ============================================================================
+ * 星陨幸存者 — 单文件 3D 幸存者类射击
+ * 设计目标：自动开火 → 掉经验 → 升级三选一 → 滚雪球变强 → 波次压力 → BOSS
+ * 依赖：three.js r160(UMD) + assets/meshes.js(离线烘焙的飞船网格)
+ * ==========================================================================*/
+
+/* ============================ CFG 全局配置 ============================ */
+const CFG = {
+  arena: 78,                 // 战场半径（圆形边界）
+  camH: 46, camBack: 30,     // 相机高度 / 后退距离
+  camLerp: 0.09,
+
+  player: {
+    hp: 100, spd: 21, accel: 12, drag: 7.5, radius: 1.15,
+    dashSpd: 52, dashTime: 0.17, dashCd: 1.5, invAfterHit: 0.75,
+  },
+
+  waveSec: 60,               // 每波时长
+  bossWave: 10,              // 第 10 波结束后 BOSS
+
+  // 经验曲线：每级所需 = base + step*lv^1.32
+  xpBase: 5, xpStep: 3.1, xpPow: 1.32,
+
+  pickRadius: 3.4,           // 基础拾取半径
+  magnetSpd: 34,
+
+  colors: {
+    player:  0x38f0ff,
+    striker: 0xffcc33,
+    warden:  0x5dff9b,
+    howitzer:0xff8a3d,
+    charger: 0xff4d6d,
+    orbiter: 0xb980ff,
+    sniper:  0x4dd2ff,
+    splitter:0x8fff5d,
+    brute:   0xff7a2f,
+    boss:    0xff3d7f,
+  },
+};
+
+/* ============================ 星域 / 地图（多地图进程） ============================ */
+/* 一局分为多个星域（地图）。每域有独立配色 / 敌群风格 / 陨石矿物，过波自动推进。
+ * 普通模式固定 5 张地图（波 1-10 → 域 0-4，之后深渊母舰），无尽模式循环轮换，地图永不重样。*/
+const STAGES = [
+  { name:'残骸星域', sub:'RUBBLE BELT',  accent:'#ff9a4d', bg:0x0c0a08, fog:0x140d07,
+    aster:[0x7a6b5a,0x8a5a3a,0x6b5a4a,0x9a6b4a], tint:0xff7a4d,
+    pool:['charger','charger','orbiter','kamikaze','splitter','sniper','bomber'] },
+  { name:'寒霜星云', sub:'FROST NEBULA', accent:'#6fe0ff', bg:0x060d14, fog:0x08161f,
+    aster:[0x4a6b82,0x5a7a9a,0x3a5a6b,0x6a8a9a], tint:0x5fd0ff,
+    pool:['sniper','orbiter','turret','wasp','mender','orbiter','weaver'] },
+  { name:'熔火深空', sub:'MOLTEN VOID',  accent:'#ff5a4d', bg:0x140806, fog:0x1c0a05,
+    aster:[0x7a4a3a,0x8a3a2a,0x5a2a1a,0x9a4a2a], tint:0xff4d4d,
+    pool:['brute','charger','kamikaze','splitter','turret','charger','bomber'] },
+  { name:'翡翠虫巢', sub:'EMERALD HIVE', accent:'#6dff8b', bg:0x07120b, fog:0x08180d,
+    aster:[0x4a7a55,0x5a8a4a,0x3a6b45,0x6a9a5a], tint:0x6dff8b,
+    pool:['wasp','wasp','mender','splitter','orbiter','kamikaze'] },
+  { name:'深渊核心', sub:'ABYSSAL CORE', accent:'#b980ff', bg:0x0c0614, fog:0x140820,
+    aster:[0x5a4a7a,0x6a3a8a,0x4a3a6b,0x7a4a9a], tint:0xb980ff,
+    pool:['phaser','brute','sniper','turret','mender','wasp','orbiter','weaver'] },
+];
+
+/* ============================ 可选战机 ============================ */
+/* 开局可在菜单里挑一架。model 指 meshes.js 里已烘焙的 key（复用现有素材，
+ * 不新增 CORS 风险）；color 决定阵营染色 + 光晕/尾焰；hp/spd/fire 是数值倍率。*/
+const SHIPS = [
+  { id:'falcon',   name:'游隼',   model:'fighter',      color:0x38f0ff, hp:100, spd:21, fire:1.00, talent:null,       startWeapon:'cannon', desc:'均衡标准型 · 机动与火力兼顾',                   trait:'无天赋' },
+  { id:'ranger',   name:'游骑兵', model:'wing_a',       color:0x6dff8b, hp:86,  spd:26, fire:1.20, talent:'rate',       startWeapon:'cannon', desc:'高速突进 · 射速更快',                          trait:'射速 +9%' },
+  { id:'vanguard', name:'先锋',   model:'enemy_charger', color:0xffd24a, hp:122, spd:18, fire:0.90, talent:'armor',      startWeapon:'cannon', desc:'厚重装甲 · 更耐打',                             trait:'减伤 -6%' },
+  { id:'titan',    name:'泰坦',   model:'enemy_brute',  color:0xff6b95, hp:150, spd:15, fire:0.82, talent:'hp',         startWeapon:'cannon', desc:'重装堡垒 · 血厚移动慢',                          trait:'+22 最大生命' },
+  { id:'storm',    name:'风暴',   model:'wing_b',       color:0xb980ff, hp:92,  spd:22, fire:1.10, talent:'crit',       startWeapon:'spread', desc:'霰弹专家 · 开局自带散射 · 暴击精准',             trait:'暴击 +7%' },
+  { id:'specter',  name:'幽影',   model:'enemy_orbiter', color:0x5dff9b, hp:88,  spd:24, fire:1.05, talent:'speed',      startWeapon:'orbit',  desc:'环绕光刃使者 · 开局自带光刃 · 机动灵活',         trait:'移速 +9%' },
+  { id:'hunter',   name:'猎手',   model:'enemy_sniper',  color:0xff5d5d, hp:90,  spd:23, fire:1.15, talent:'crit',       startWeapon:'laser',  desc:'狙击专精 · 开局自带相位激光 · 单点爆发',         trait:'暴击 +7%' },
+  { id:'bulwark',  name:'重锤',   model:'hauler',        color:0x6db5ff, hp:142, spd:16, fire:0.86, talent:'armor',      startWeapon:'aura',   desc:'要塞支援 · 开局自带湮灭力场 · 硬抗前线',         trait:'减伤 -6%' },
+  { id:'hive',     name:'蜂巢',   model:'enemy_splitter',color:0xc8a2ff, hp:104, spd:21, fire:1.08, talent:'speed',      startWeapon:'drone',  desc:'蜂群指挥 · 开局自带无人僚机 · 以多打少',         trait:'移速 +9%' },
+  { id:'arc',      name:'弧光',   model:'enemy_orbiter', color:0x9df6ff, hp:96,  spd:22, fire:1.12, talent:'rate',       startWeapon:'rail',   desc:'电磁炮手 · 开局自带轨道炮 · 远程穿透',           trait:'射速 +9%' },
+  { id:'ignis',    name:'炽焰',   model:'enemy_charger',color:0xff7a2f, hp:110, spd:19, fire:1.00, talent:'crit',       startWeapon:'flame',  desc:'烈焰使者 · 开局自带烈焰喷射 · 近身灼烧',         trait:'暴击 +7%' },
+];
+
+/* ============================ Util 工具 ============================ */
+const Util = {
+  TAU: Math.PI * 2,
+  rand: (a, b) => a + Math.random() * (b - a),
+  randInt: (a, b) => Math.floor(a + Math.random() * (b - a + 1)),
+  pick: (arr) => arr[(Math.random() * arr.length) | 0],
+  clamp: (v, a, b) => v < a ? a : (v > b ? b : v),
+  lerp: (a, b, t) => a + (b - a) * t,
+  // 角度插值（处理 ±π 环绕）
+  angLerp(a, b, t){
+    let d = (b - a) % Util.TAU;
+    if (d > Math.PI) d -= Util.TAU; else if (d < -Math.PI) d += Util.TAU;
+    return a + d * t;
+  },
+  dist2: (ax, az, bx, bz) => { const dx = ax - bx, dz = az - bz; return dx*dx + dz*dz; },
+  // 洗牌取前 n 个
+  sample(arr, n){
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--){
+      const j = (Math.random() * (i + 1)) | 0;
+      const t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+    return a.slice(0, n);
+  },
+  fmtTime(s){
+    const m = Math.floor(s / 60), ss = Math.floor(s % 60);
+    return m + ':' + (ss < 10 ? '0' : '') + ss;
+  },
+  // 把点约束在圆形战场内
+  clampArena(o, r){
+    const d = Math.hypot(o.x, o.z), lim = CFG.arena - (r || 0);
+    if (d > lim){ const k = lim / d; o.x *= k; o.z *= k; return true; }
+    return false;
+  },
+};
+
+/* ============================ Mesh 烘焙网格解码 ============================ */
+/* assets/meshes.js 里的位置/法线是 Int16 量化 + base64；这里还原成 BufferGeometry。
+   这样避开了 file:// 下 GLTFLoader(ESM) 的 CORS 限制，双击就能跑。*/
+const Mesh = {
+  cache: {},
+  _b64(b64){
+    const bin = atob(b64), n = bin.length, u8 = new Uint8Array(n);
+    for (let i = 0; i < n; i++) u8[i] = bin.charCodeAt(i);
+    return u8;
+  },
+  _deq(b64, range){
+    const u8 = this._b64(b64);
+    const q = new Int16Array(u8.buffer, u8.byteOffset, u8.byteLength >> 1);
+    const f = new Float32Array(q.length);
+    const k = range / 32767;
+    for (let i = 0; i < q.length; i++) f[i] = q[i] * k;
+    return f;
+  },
+  // 法线是 Int8 量化（1/127 精度足够 Lambert 着色，体积比 Int16 再省一半）
+  _deqN(b64){
+    const u8 = this._b64(b64);
+    const q = new Int8Array(u8.buffer, u8.byteOffset, u8.byteLength);
+    const f = new Float32Array(q.length);
+    for (let i = 0; i < q.length; i++) f[i] = q[i] / 127;
+    return f;
+  },
+  /** 返回 [{geo, color, metal, rough}]，几何缓存复用 */
+  parts(key){
+    if (this.cache[key]) return this.cache[key];
+    const M = (typeof window !== 'undefined' && window.MESHES) ? window.MESHES[key] : null;
+    if (!M){ this.cache[key] = null; return null; }
+    const out = M.parts.map(p => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(this._deq(p.p, M.ps), 3));
+      g.setAttribute('normal',   new THREE.BufferAttribute(this._deqN(p.n), 3));
+      const iu = this._b64(p.i);
+      g.setIndex(new THREE.BufferAttribute(
+        p.b ? new Uint32Array(iu.buffer, iu.byteOffset, iu.byteLength >> 2)
+            : new Uint16Array(iu.buffer, iu.byteOffset, iu.byteLength >> 1), 1));
+      g.computeBoundingSphere();
+      return { geo: g, color: p.c, metal: p.m, rough: p.r, emis: p.e };
+    });
+    this.cache[key] = out;
+    return out;
+  },
+};
+
+/* ============================ Gfx 造型工厂 ============================ */
+/* 约定：所有单位 Group 的「机头」朝 +Z，外部只需设置 group.rotation.y = yaw。*/
+/* 缺失网格预警集合（每 key 仅 warn 一次，避免刷屏） */
+const _missingMeshWarn = {};
+const Gfx = {
+  // —— 烘焙模型的朝向修正（模型自身坐标系 → 机头 +Z）。
+  //    注意：bake_models.mjs 对所有飞船已用 rot:[0,π,0] 在烘焙期把机头旋到 +Z，
+  //    所以这里大多数模型应为 0；仅保留旧 Poly Pizza 模型（已弃用）的兼容值。——
+  meshYaw: { fighter: 0, hauler: 0 },
+
+  /** 缺失网格时的洋红占位回退：强提示 + 自转方块，便于一眼定位资源故障。
+   *  返回与 ship()/enemyShip() 兼容的 {g, mats, meshes}，不引发下游崩溃。*/
+  _mkMissingProxy(key){
+    if (!_missingMeshWarn[key]){ _missingMeshWarn[key] = 1;
+      console.warn('[Gfx] Critical: Missing mesh key: ' + key); }
+    const g = new THREE.Group();
+    const box = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.2, 1.2),
+      new THREE.MeshBasicMaterial({ color: 0xff00ff }));
+    box.onBeforeRender = function(){ this.rotation.x += 0.05; this.rotation.y += 0.07; };
+    g.add(box);
+    return { g, mats: [], meshes: [] };
+  },
+
+  _mat(hex, opt){
+    const o = opt || {};
+    return new THREE.MeshLambertMaterial({
+      color: hex,
+      emissive: o.emissive != null ? o.emissive : 0x000000,
+      emissiveIntensity: o.ei != null ? o.ei : 1,
+      transparent: !!o.transparent, opacity: o.opacity != null ? o.opacity : 1,
+      side: o.side || THREE.FrontSide,
+    });
+  },
+
+  /** 用烘焙好的真 3D 飞船建 Group；tint 会与原色相乘，保留模型自身明暗层次。
+   *  英雄单位（玩家/僚机）额外加：反向外壳描边 + 翼尖导航灯 + 贴地辉光，提升精致度。*/
+  ship(key, tint, scale){
+    const parts = Mesh.parts(key);
+    const g = new THREE.Group();
+    const mats = [];
+    if (!parts) return this._mkMissingProxy(key);          // 素材缺失 → 洋红占位 + warn（不再静默空壳）
+    const t = new THREE.Color(tint == null ? 0xffffff : tint);
+    for (const p of parts){
+      const base = new THREE.Color(p.color[0], p.color[1], p.color[2]);
+      // 混合：保留 45% 原色（金属灰/黑），叠加 55% 阵营色，避免整船糊成一片
+      const lum = 0.299*base.r + 0.587*base.g + 0.114*base.b;
+      const c = new THREE.Color(
+        base.r * 0.45 + t.r * (0.35 + lum * 0.5),
+        base.g * 0.45 + t.g * (0.35 + lum * 0.5),
+        base.b * 0.45 + t.b * (0.35 + lum * 0.5));
+      const m = new THREE.MeshLambertMaterial({ color: c, emissive: c, emissiveIntensity: 0.18 });
+      const mesh = new THREE.Mesh(p.geo, m);
+      mesh.castShadow = false; mesh.receiveShadow = false;
+      g.add(mesh); mats.push(m);
+      // —— 反向外壳描边：BackSide + 放大 1.05，让轮廓更利落（cel 风） ——
+      const ol = new THREE.Mesh(p.geo, new THREE.MeshBasicMaterial({
+        color: 0x05070f, side: THREE.BackSide }));
+      ol.scale.multiplyScalar(1.05);
+      g.add(ol);
+    }
+    const yf = this.meshYaw[key] || 0;
+    if (yf) g.children.forEach(c => { c.rotation.y = yf; });
+    // 翼尖导航灯（阵营色发光小球，细节感）
+    const lc = new THREE.Color(Math.min(1, t.r * 1.3 + 0.12),
+                                Math.min(1, t.g * 1.3 + 0.12),
+                                Math.min(1, t.b * 1.3 + 0.12));
+    for (const sx of [-0.85, 0.85]){
+      const light = new THREE.Mesh(new THREE.SphereGeometry(0.13, 6, 5),
+        new THREE.MeshBasicMaterial({ color: lc, transparent: true, opacity: 0.92,
+          blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+      light.position.set(sx, 0.18, 0.45);
+      g.add(light);
+    }
+    // 座舱罩：流线型玻璃罩（cel 描边 + 顶部高光），贴合机头而非凸出发光泡（VS 友好造型）
+    const canopyGeo = new THREE.SphereGeometry(0.4, 16, 10, 0, Util.TAU, 0, Math.PI * 0.5);
+    const canopyMat = new THREE.MeshLambertMaterial({ color: lc, transparent: true, opacity: 0.46,
+      emissive: new THREE.Color(lc.r * 0.22, lc.g * 0.22, lc.b * 0.22), emissiveIntensity: 0.6,
+      depthWrite: false, side: THREE.DoubleSide });
+    const canopy = new THREE.Mesh(canopyGeo, canopyMat);
+    canopy.position.set(0, 0.52, 0.22);
+    canopy.scale.set(1.0, 0.8, 1.55);
+    g.add(canopy);
+    // cel 描边外壳（与机身轮廓一致的利落边）
+    const canopyOl = new THREE.Mesh(canopyGeo, new THREE.MeshBasicMaterial({ color: 0x05070f, side: THREE.BackSide }));
+    canopyOl.position.copy(canopy.position);
+    canopyOl.scale.set(1.06, 0.848, 1.643);
+    g.add(canopyOl);
+    // 顶部玻璃高光（一道亮条，制造反光观感）
+    const canopyHi = new THREE.Mesh(
+      new THREE.SphereGeometry(0.15, 8, 6, 0, Util.TAU, 0, Math.PI * 0.5),
+      new THREE.MeshBasicMaterial({ color: 0xeaf6ff, transparent: true, opacity: 0.5,
+        blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+    canopyHi.position.set(0, 0.6, 0.08);
+    canopyHi.scale.set(0.7, 0.45, 1.3);
+    g.add(canopyHi);
+    // 贴地阵营辉光（把飞船"钉"在战场上，也增加色彩层次）
+    g.add(this.glow(t.getHex(), 1.5, 0.16));
+    if (scale && scale !== 1) g.scale.setScalar(scale);
+    return { g, mats };
+  },
+
+  /** 敌人用的真 3D 飞船：返回 Group + 材质数组。
+   *  用法：const r = Gfx.enemyShip(key, tint, scale); key 为 meshes.js 里的完整模型名
+   *        （如 'enemy_charger' / 'wing_a'），r.g 是 Object3D；r.mats 用于变色。*/
+  _enemyShipCache: {},
+  enemyShip(key, tint, scale){
+    const parts = Mesh.parts(key);
+    if (!parts) return this._mkMissingProxy(key);          // 素材缺失 → 洋红占位 + warn
+    // 复用一个 geometry，但每实例独立 material（用于变色/受伤闪白/精英高亮）
+    const t = new THREE.Color(tint == null ? 0xffffff : tint);
+    const meshes = [];
+    const mats = [];
+    for (const p of parts){
+      const base = new THREE.Color(p.color[0], p.color[1], p.color[2]);
+      const lum = 0.299*base.r + 0.587*base.g + 0.114*base.b;
+      const c = new THREE.Color(
+        base.r * 0.4 + t.r * (0.4 + lum * 0.6),
+        base.g * 0.4 + t.g * (0.4 + lum * 0.6),
+        base.b * 0.4 + t.b * (0.4 + lum * 0.6));
+      const m = new THREE.MeshLambertMaterial({ color: c, emissive: c, emissiveIntensity: 0.22 });
+      const mesh = new THREE.Mesh(p.geo, m);
+      mesh.scale.setScalar(scale || 1);
+      meshes.push(mesh); mats.push(m);
+      // 反向外壳描边：与英雄单位一致的 cel 风轮廓（BackSide + 放大 1.06），
+      // 让敌群在混战里轮廓更利落可辨；材质不入 mats，不影响受伤闪白/变色。
+      const ol = new THREE.Mesh(p.geo, new THREE.MeshBasicMaterial({
+        color: 0x05070f, side: THREE.BackSide }));
+      ol.scale.setScalar((scale || 1) * 1.06);
+      meshes.push(ol);
+    }
+    const g = new THREE.Group(); meshes.forEach(m => g.add(m));
+    // 尾部引擎辉光（朝 -Z，与机头 +Z 相反 → 背对玩家，符合飞行姿态，增加生命感）
+    g.add(this.thruster(t.getHex(), 0.16, -0.6));
+    return { g, mats, meshes };
+  },
+
+  /** 敌人 InstancedMesh 用：把烘焙真 3D 模型的全部 body 部件合并成单个几何
+   *  （去掉反向描边壳 / 尾焰），保留 position+normal 供受光着色 + instanceColor 染色。
+   *  每种 variant 模型只建一次并缓存；缺失时返回 null，调用方回退到默认几何。*/
+  _enemyBodyCache: {},
+  enemyBodyGeo(vk){
+    if (this._enemyBodyCache[vk] !== undefined) return this._enemyBodyCache[vk];
+    const parts = Mesh.parts(vk);
+    if (!parts || !parts.length){ this._enemyBodyCache[vk] = null; return null; }
+    // 烘焙模型是「索引几何」：必须先 toNonIndexed 展开顶点，否则直接拼接顶点数组会因
+    // 索引引用错位导致表面缺失/撕裂（即"建模显示不完全"的根因）。
+    const pos = [], nrm = [];
+    for (const p of parts){
+      const ng = p.geo.index ? p.geo.toNonIndexed() : p.geo;
+      const P = ng.attributes.position, N = ng.attributes.normal;
+      for (let i = 0; i < P.array.length; i++) pos.push(P.array[i]);
+      for (let i = 0; i < N.array.length; i++) nrm.push(N.array[i]);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
+    g.setAttribute('normal',   new THREE.BufferAttribute(new Float32Array(nrm), 3));
+    g.computeBoundingSphere();
+    this._enemyBodyCache[vk] = g;
+    return g;
+  },
+
+  /** 无人僚机：真 3D 侦察无人机（着色 + 反向描边 + 旋翼导航灯 + 微推进器） */
+  drone(tint, scale){
+    const parts = Mesh.parts('drone');
+    const g = new THREE.Group();
+    const t = new THREE.Color(tint == null ? 0xffcc33 : tint);
+    if (parts) for (const p of parts){
+      const base = new THREE.Color(p.color[0], p.color[1], p.color[2]);
+      const lum = 0.299*base.r + 0.587*base.g + 0.114*base.b;
+      const c = new THREE.Color(
+        base.r*0.5  + t.r*(0.3 + lum*0.5),
+        base.g*0.5  + t.g*(0.3 + lum*0.5),
+        base.b*0.5  + t.b*(0.3 + lum*0.5));
+      const m = new THREE.MeshLambertMaterial({ color: c, emissive: c, emissiveIntensity: 0.2 });
+      g.add(new THREE.Mesh(p.geo, m));
+      const ol = new THREE.Mesh(p.geo, new THREE.MeshBasicMaterial({ color: 0x05070f, side: THREE.BackSide }));
+      ol.scale.multiplyScalar(1.06); g.add(ol);
+    }
+    // 四旋翼导航灯（阵营色发光小球，细节感）
+    const lc = new THREE.Color(Math.min(1, t.r*1.3+0.12), Math.min(1, t.g*1.3+0.12), Math.min(1, t.b*1.3+0.12));
+    for (const [px,pz] of [[0.248,0.248],[-0.248,0.248],[0.248,-0.248],[-0.248,-0.248]]){
+      const light = new THREE.Mesh(new THREE.SphereGeometry(0.05, 6, 5),
+        new THREE.MeshBasicMaterial({ color: lc, transparent: true, opacity: 0.92,
+          blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+      light.position.set(px, 0.03, pz); g.add(light);
+    }
+    // 旋翼桨叶（高速旋转的可见叶片，增强"无人机在飞"的生动感）
+    const rotors = new THREE.Group();
+    const bladeGeo = new THREE.BoxGeometry(0.26, 0.02, 0.05);
+    const bladeMat = new THREE.MeshBasicMaterial({ color: lc.getHex(), transparent: true,
+      opacity: 0.42, blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
+    for (const [px,pz] of [[0.248,0.248],[-0.248,0.248],[0.248,-0.248],[-0.248,-0.248]]){
+      const blade = new THREE.Mesh(bladeGeo, bladeMat);
+      blade.position.set(px, 0.03, pz);
+      rotors.add(blade);
+    }
+    g.add(rotors);
+    g.userData.rotors = rotors;
+    // 朝 -Z 的微推进器（飞行姿态 + 生命感）
+    g.add(this.thruster(t.getHex(), 0.10, -0.30, { opacity: 0.5, core: 0.6 }));
+    if (scale && scale !== 1) g.scale.setScalar(scale);
+    return g;
+  },
+
+  /** 医疗机：救援舱 + 发光绿十字（辨识度即"这是医疗机"），不再复用运输机 */
+  medic(tint, scale){
+    const g = new THREE.Group();
+    const t = new THREE.Color(tint == null ? 0x6dff8b : tint);
+    // 圆润救援舱机体（白绿医疗配色）
+    const hull = new THREE.Mesh(new THREE.SphereGeometry(0.5, 16, 12),
+      new THREE.MeshLambertMaterial({ color: 0xeaf6ee, emissive: 0x16361f, emissiveIntensity: 0.3 }));
+    hull.scale.set(1.0, 0.82, 1.28);
+    g.add(hull);
+    const ol = new THREE.Mesh(hull.geometry, new THREE.MeshBasicMaterial({ color: 0x05070f, side: THREE.BackSide }));
+    ol.scale.copy(hull.scale).multiplyScalar(1.06); g.add(ol);
+    // 侧翼（阵营绿）
+    const wingMat = new THREE.MeshLambertMaterial({ color: t.getHex(), emissive: t.getHex(), emissiveIntensity: 0.22 });
+    for (const sx of [-1, 1]){
+      const wf = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.06, 0.32), wingMat);
+      wf.position.set(sx * 0.56, -0.02, -0.12); wf.rotation.z = sx * 0.38; g.add(wf);
+    }
+    // 医疗十字（加法发光绿，顶面 + 前面各一个，顶视/侧视都认得出）
+    const crossMat = new THREE.MeshBasicMaterial({ color: t.getHex(), transparent: true, opacity: 0.96,
+      blending: THREE.AdditiveBlending, depthWrite: false, fog: false });
+    // 顶面十字（臂沿 X / Z）
+    const topV = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.05, 0.5), crossMat);
+    const topH = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.05, 0.12), crossMat);
+    topV.position.set(0, 0.44, 0.05); topH.position.set(0, 0.44, 0.05); g.add(topV, topH);
+    // 前面十字（臂沿 X / Y，朝机头 +Z）
+    const fV = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.42, 0.12), crossMat);
+    const fH = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.1, 0.12), crossMat);
+    fV.position.set(0, 0.06, 0.52); fH.position.set(0, 0.06, 0.52); g.add(fV, fH);
+    // 座舱罩
+    const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.3, 12, 8, 0, Util.TAU, 0, Math.PI * 0.55),
+      new THREE.MeshBasicMaterial({ color: t.getHex(), transparent: true, opacity: 0.5,
+        blending: THREE.AdditiveBlending, depthWrite: false, fog: false, side: THREE.DoubleSide }));
+    canopy.position.set(0, 0.36, 0.18); canopy.scale.set(1, 0.85, 1.25); g.add(canopy);
+    // 导航灯
+    const lc = new THREE.Color(Math.min(1, t.r*1.3+0.12), Math.min(1, t.g*1.3+0.12), Math.min(1, t.b*1.3+0.12));
+    for (const sx of [-0.5, 0.5]){
+      const light = new THREE.Mesh(new THREE.SphereGeometry(0.07, 6, 5),
+        new THREE.MeshBasicMaterial({ color: lc, transparent: true, opacity: 0.92,
+          blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+      light.position.set(sx, 0.2, -0.5); g.add(light);
+    }
+    if (scale && scale !== 1) g.scale.setScalar(scale);
+    return { g };
+  },
+
+  /** 环绕光刃：真 3D 双刃模型 + 加法青色辉光（保留能量武器观感） */
+  blade(tint){
+    const parts = Mesh.parts('blade');
+    const col = tint == null ? 0x8ff0ff : tint;
+    if (!parts) return new THREE.Mesh(new THREE.ConeGeometry(0.16, 1.3, 4),
+      new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+    return new THREE.Mesh(parts[0].geo, new THREE.MeshBasicMaterial({
+      color: col, transparent: true, opacity: 0,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false }));
+  },
+
+  /** BOSS：多层旋转要塞 */
+  thruster(color, size, z, opt){
+    const g = new THREE.Group();
+    const o = opt || {};
+    const opC = o.opacity != null ? o.opacity : 0.72;
+    const opK = o.core != null ? o.core : 0.9;
+    const cone = new THREE.Mesh(
+      new THREE.ConeGeometry(size * 0.5, size * 2.1, 8, 1, true),
+      new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: opC,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+    cone.rotation.x = Math.PI / 2;          // 尖端指向 -Z
+    cone.position.z = -size * 1.05;
+    const core = new THREE.Mesh(
+      new THREE.SphereGeometry(size * 0.42, 8, 6),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: opK,
+        blending: THREE.AdditiveBlending, depthWrite: false }));
+    g.add(cone, core);
+    g.position.z = z;
+    g.userData.cone = cone; g.userData.core = core;
+    return g;
+  },
+
+  /** 地面光晕（贴地圆片，用来把单位"钉"在地面上，2.5D 关键） */
+  glow(color, r, op){
+    const m = new THREE.Mesh(
+      new THREE.CircleGeometry(r, 20),
+      new THREE.MeshBasicMaterial({ color: color, transparent: true,
+        opacity: op == null ? 0.26 : op, blending: THREE.AdditiveBlending, depthWrite: false }));
+    m.rotation.x = -Math.PI / 2;
+    m.position.y = 0.04;
+    return m;
+  },
+
+  /* ---- 敌人：每种造型合并成单个 geometry，1 敌人 = 1 drawcall ---- */
+  _enemyGeoCache: {},
+  enemyGeo(kind){
+    if (this._enemyGeoCache[kind]) return this._enemyGeoCache[kind];
+    const src = [];        // {geo, mat4, shade} shade 用于顶点色明暗
+    const add = (geo, x, y, z, rx, ry, rz, sh) => {
+      const m = new THREE.Matrix4();
+      m.compose(new THREE.Vector3(x, y, z),
+        new THREE.Quaternion().setFromEuler(new THREE.Euler(rx || 0, ry || 0, rz || 0)),
+        new THREE.Vector3(1, 1, 1));
+      src.push({ geo, m, sh: sh == null ? 1 : sh });
+    };
+
+    if (kind === 'charger'){                       // 冲锋兵：楔形箭头
+      add(new THREE.ConeGeometry(0.62, 1.9, 4), 0, 0, 0.25, Math.PI/2, 0, Math.PI/4, 1.0);
+      add(new THREE.BoxGeometry(1.5, 0.24, 0.5),  0, 0, -0.4, 0, 0, 0, 0.55);
+      add(new THREE.BoxGeometry(0.3, 0.3, 0.5),   0, 0.16, -0.55, 0, 0, 0, 1.5);
+    } else if (kind === 'orbiter'){                // 环绕者：八面体 + 环
+      add(new THREE.OctahedronGeometry(0.72, 0), 0, 0.1, 0, 0, 0, 0, 1.0);
+      add(new THREE.TorusGeometry(0.95, 0.09, 6, 14), 0, 0.1, 0, Math.PI/2, 0, 0, 0.65);
+      add(new THREE.SphereGeometry(0.3, 8, 6), 0, 0.1, 0.5, 0, 0, 0, 1.7);
+    } else if (kind === 'sniper'){                 // 狙击者：细长炮台
+      add(new THREE.CylinderGeometry(0.1, 0.12, 2.0, 7), 0, 0.12, 0.55, Math.PI/2, 0, 0, 1.5);
+      add(new THREE.BoxGeometry(0.95, 0.42, 0.95), 0, 0.05, -0.35, 0, Math.PI/4, 0, 0.75);
+      add(new THREE.BoxGeometry(0.28, 0.7, 0.28), -0.62, 0, -0.4, 0, 0, 0.3, 0.5);
+      add(new THREE.BoxGeometry(0.28, 0.7, 0.28),  0.62, 0, -0.4, 0, 0, -0.3, 0.5);
+    } else if (kind === 'splitter'){               // 分裂者：一堆小球
+      add(new THREE.IcosahedronGeometry(0.62, 0), 0, 0.1, 0, 0, 0, 0, 1.0);
+      add(new THREE.IcosahedronGeometry(0.3, 0), 0.55, 0.16, 0.28, 0, 0, 0, 1.3);
+      add(new THREE.IcosahedronGeometry(0.3, 0), -0.5, 0.16, -0.3, 0, 0, 0, 1.3);
+      add(new THREE.IcosahedronGeometry(0.26, 0), 0.1, 0.3, -0.6, 0, 0, 0, 1.3);
+    } else if (kind === 'brute'){                  // 重甲：厚重方块
+      add(new THREE.BoxGeometry(1.5, 0.85, 1.9), 0, 0.2, 0, 0, 0, 0, 0.85);
+      add(new THREE.BoxGeometry(1.95, 0.4, 0.85), 0, 0.2, -0.15, 0, 0, 0, 0.6);
+      add(new THREE.ConeGeometry(0.5, 0.9, 4), 0, 0.2, 1.15, Math.PI/2, 0, Math.PI/4, 1.35);
+      add(new THREE.BoxGeometry(0.34, 0.34, 0.4), -0.5, 0.2, -1.0, 0, 0, 0, 1.7);
+      add(new THREE.BoxGeometry(0.34, 0.34, 0.4),  0.5, 0.2, -1.0, 0, 0, 0, 1.7);
+    } else {                                        // 兜底
+      add(new THREE.IcosahedronGeometry(0.7, 0), 0, 0.1, 0, 0, 0, 0, 1);
+    }
+
+    // —— 手动合并（不依赖 BufferGeometryUtils）——
+    // 部件明暗写进顶点色，配合 material.vertexColors 直接相乘，
+    // 于是「一个敌人 = 一次 drawcall」，同时还保留部件层次感。
+    let vTot = 0, iTot = 0;
+    for (const s of src){
+      vTot += s.geo.attributes.position.count;
+      iTot += s.geo.index ? s.geo.index.count : s.geo.attributes.position.count;
+    }
+    const pos = new Float32Array(vTot * 3), nrm = new Float32Array(vTot * 3);
+    const col = new Float32Array(vTot * 3);
+    const idx = new Uint16Array(iTot);
+    let vo = 0, io = 0;
+    const nm3 = new THREE.Matrix3();
+    const v3 = new THREE.Vector3();
+    for (const s of src){
+      const P = s.geo.attributes.position, N = s.geo.attributes.normal;
+      nm3.getNormalMatrix(s.m);
+      for (let i = 0; i < P.count; i++){
+        v3.set(P.getX(i), P.getY(i), P.getZ(i)).applyMatrix4(s.m);
+        pos[(vo+i)*3] = v3.x; pos[(vo+i)*3+1] = v3.y; pos[(vo+i)*3+2] = v3.z;
+        v3.set(N.getX(i), N.getY(i), N.getZ(i)).applyMatrix3(nm3).normalize();
+        nrm[(vo+i)*3] = v3.x; nrm[(vo+i)*3+1] = v3.y; nrm[(vo+i)*3+2] = v3.z;
+        col[(vo+i)*3] = s.sh; col[(vo+i)*3+1] = s.sh; col[(vo+i)*3+2] = s.sh;
+      }
+      if (s.geo.index){ const I = s.geo.index;
+        for (let i = 0; i < I.count; i++) idx[io+i] = vo + I.getX(i);
+        io += I.count;
+      } else {
+        for (let i = 0; i < P.count; i++) idx[io+i] = vo + i;
+        io += P.count;
+      }
+      vo += P.count;
+      s.geo.dispose();
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('normal',   new THREE.BufferAttribute(nrm, 3));
+    g.setAttribute('color',    new THREE.BufferAttribute(col, 3));
+    g.setIndex(new THREE.BufferAttribute(idx, 1));
+    g.computeBoundingSphere();
+    this._enemyGeoCache[kind] = g;
+    return g;
+  },
+
+  /** 敌人材质：靠顶点色做部件明暗，单材质出层次，零自定义 shader */
+  enemyMat(color){
+    return new THREE.MeshLambertMaterial({
+      color: color, emissive: color, emissiveIntensity: 0.18, vertexColors: true });
+  },
+
+  /** 敌人：占位合并几何（保留旧 enemyGeo API，便于过渡或回退） */
+  enemyGeo(kind){
+    return this._enemyShipCache['enemy_' + kind] ? this._enemyShipCache['enemy_' + kind][0].geo : null;
+  },
+  enemyMat(color){
+    return new THREE.MeshLambertMaterial({ color: color, emissive: color, emissiveIntensity: 0.22 });
+  },
+  boss(){
+    const g = new THREE.Group();
+    const C = CFG.colors.boss;
+    // —— 外层船体：cargoA 环带（最大结构体） ——
+    const hullParts = Mesh.parts('boss_spine');
+    const hull = new THREE.Group();
+    for (const p of hullParts){
+      const c = new THREE.Color(p.color[0], p.color[1], p.color[2]);
+      const m = new THREE.MeshLambertMaterial({ color: 0x1a0810, emissive: C, emissiveIntensity: 0.28 });
+      const mesh = new THREE.Mesh(p.geo, m);
+      hull.add(mesh);
+    }
+    hull.scale.setScalar(0.55);
+    hull.rotation.x = 0;
+    hull.position.y = 0;
+    g.add(hull);
+
+    // —— 核心：turret_single（Kenney 炮台站姿） ——
+    const coreParts = Mesh.parts('boss_core');
+    const core = new THREE.Group();
+    for (const p of coreParts){
+      const c = new THREE.Color(p.color[0], p.color[1], p.color[2]);
+      const m = new THREE.MeshLambertMaterial({ color: c, emissive: c, emissiveIntensity: 0.5 });
+      const mesh = new THREE.Mesh(p.geo, m);
+      core.add(mesh);
+    }
+    core.scale.setScalar(0.42);
+    core.position.y = 0.6;
+    g.add(core);
+
+    // —— 4 层能量环（X 倾斜叠加，沿 Y 旋转） ——
+    const rings = [];
+    for (let i = 0; i < 4; i++){
+      const r = new THREE.Mesh(
+        new THREE.TorusGeometry(2.6 + i * 0.8, 0.12 + i * 0.04, 6, 32),
+        new THREE.MeshBasicMaterial({ color: i % 2 ? 0xffcc33 : C,
+          transparent: true, opacity: 0.66 - i * 0.09, depthWrite: false }));
+      r.rotation.x = Math.PI / 2 + (i - 1.5) * 0.22;
+      r.rotation.z = i * 0.5;
+      g.add(r); rings.push(r);
+    }
+
+    // —— 6 座真模型炮塔（turret_double 沿圆周排布） ——
+    const turrets = [];
+    const armParts = Mesh.parts('boss_arm');
+    for (let i = 0; i < 6; i++){
+      const a = i / 6 * Util.TAU;
+      const arm = new THREE.Group();
+      for (const p of armParts){
+        const c = new THREE.Color(p.color[0], p.color[1], p.color[2]);
+        const m = new THREE.MeshLambertMaterial({ color: c, emissive: 0xffaa44, emissiveIntensity: 0.4 });
+        const mesh = new THREE.Mesh(p.geo, m);
+        arm.add(mesh);
+      }
+      arm.scale.setScalar(0.26);
+      arm.position.set(Math.cos(a) * 3.2, 0.4, Math.sin(a) * 3.2);
+      arm.rotation.y = -a;
+      g.add(arm); turrets.push(arm);
+    }
+
+    const halo = this.glow(C, 5, 0.28); g.add(halo);
+
+    // 外层能量光环（更大更亮，缓慢呼吸，强化威压感）
+    const outerHalo = new THREE.Mesh(
+      new THREE.TorusGeometry(6.4, 0.18, 8, 64),
+      new THREE.MeshBasicMaterial({ color: C, transparent: true, opacity: 0.5,
+        blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+    outerHalo.rotation.x = Math.PI / 2;
+    g.add(outerHalo);
+
+    // 3 颗环绕卫星舱（沿大圆公转，增加体量感与机械细节）
+    const pods = [];
+    const podGeo = new THREE.IcosahedronGeometry(0.5, 0);
+    for (let i = 0; i < 3; i++){
+      const pod = new THREE.Mesh(podGeo, new THREE.MeshLambertMaterial({
+        color: 0x2a0d18, emissive: 0xffcc33, emissiveIntensity: 0.7 }));
+      pod.scale.setScalar(0.9);
+      g.add(pod); pods.push(pod);
+    }
+
+    g.userData = { hull, core, rings, turrets, halo, outerHalo, pods };
+    return g;
+  },
+};
+
+/* ============================ Pool 对象池 ============================ */
+/* swap-remove：release 时把末尾元素换到空位，保证 active 数组紧凑无空洞。*/
+const Pool = {
+  create(cap, factory){
+    const p = {
+      cap, items: [], active: [], free: [], count: 0, factory,
+      _grow(){
+        const o = this.factory();
+        o._pi = this.items.length;
+        this.items.push(o);
+        return o;
+      },
+      get(){
+        let o;
+        if (this.free.length) o = this.free.pop();
+        else if (this.items.length < this.cap) o = this._grow();
+        else return null;                       // 满了就丢弃新请求，保帧率
+        o._ai = this.active.length;
+        this.active.push(o);
+        this.count = this.active.length;
+        o.alive = true;      // 业务语义：还活着（业务层可提前置 false 表示"正在死"）
+        o._in   = true;      // 池语义：当前在 active 列表里（只由池自己维护）
+        return o;
+      },
+      release(o){
+        if (!o._in) return;  // 只认池自己的标记，避免业务层提前置 alive=false 导致回收失败
+        o._in = false;
+        o.alive = false;
+        const i = o._ai, last = this.active.pop();
+        if (last !== o){ this.active[i] = last; last._ai = i; }
+        this.count = this.active.length;
+        this.free.push(o);
+      },
+      releaseAll(){
+        while (this.active.length) this.release(this.active[this.active.length - 1]);
+      },
+      /** 倒序遍历，回调返回 true 表示回收 */
+      each(fn){
+        for (let i = this.active.length - 1; i >= 0; i--){
+          const o = this.active[i];
+          if (fn(o) === true) this.release(o);
+        }
+      },
+    };
+    return p;
+  },
+};
+
+/* ============================ Grid 空间哈希 ============================ */
+/* 敌人上百时，O(n²) 碰撞会炸；用格子把查询降到邻域。*/
+const Grid = {
+  cell: 5,
+  OFF: 512,          // 坐标偏移，保证格子索引非负（|0 对负数是向零取整，会把 -0.5 和 0.5 归一格）
+  map: new Map(),
+  clear(){ this.map.clear(); },
+  _k(cx, cz){ return (cx + this.OFF) * 1024 + (cz + this.OFF); },
+  insert(o){
+    const k = this._k(Math.floor(o.x / this.cell), Math.floor(o.z / this.cell));
+    let b = this.map.get(k);
+    if (!b){ b = []; this.map.set(k, b); }
+    b.push(o);
+  },
+  /** 收集半径 r 内的候选（返回复用数组，勿长期持有） */
+  _out: [],
+  query(x, z, r){
+    const out = this._out; out.length = 0;
+    const c = this.cell, n = Math.ceil(r / c);
+    const cx = Math.floor(x / c), cz = Math.floor(z / c);
+    for (let i = -n; i <= n; i++) for (let j = -n; j <= n; j++){
+      const b = this.map.get(this._k(cx + i, cz + j));
+      if (b) for (let k = 0; k < b.length; k++) out.push(b[k]);
+    }
+    return out;
+  },
+};
+
+/* ==================== p3_world.js ==================== */
+
+/* ============================ World 场景 ============================ */
+const World = {
+  scene: null, camera: null, renderer: null,
+  shakeT: 0, shakeP: 0,
+  camX: 0, camZ: 0, ambT: 0,   // ambT：始终累加的环境动画时钟（菜单/暂停时也让背景活着）
+
+  init(){
+    const sc = this.scene = new THREE.Scene();
+    sc.background = new THREE.Color(0x05070f);
+    sc.fog = new THREE.Fog(0x05070f, 62, 128);
+
+    this.camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.5, 400);
+    this.camera.position.set(0, CFG.camH, CFG.camBack);
+    this.camera.lookAt(0, 0, 0);
+
+    const r = this.renderer = new THREE.WebGLRenderer({
+      antialias: true, powerPreference: 'high-performance' });
+    r.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+    r.setSize(innerWidth, innerHeight);
+    r.domElement.id = 'gl';
+    document.body.insertBefore(r.domElement, document.body.firstChild);
+
+    /* ---- 光照：暗色宇宙基调，敌人靠自发光显色（原版配置：对比度高、颜色鲜明）---- */
+    sc.add(new THREE.AmbientLight(0x4a6a95, 1.15));
+    const key = new THREE.DirectionalLight(0xbfe6ff, 1.5);
+    key.position.set(24, 52, 18); sc.add(key);
+    const rim = new THREE.DirectionalLight(0xff5c93, 0.55);
+    rim.position.set(-30, 18, -26); sc.add(rim);
+    // 跟随玩家的点光，给近处单位打亮，突出"主角光环"
+    this.playerLight = new THREE.PointLight(0x38f0ff, 90, 34, 2);
+    this.playerLight.position.set(0, 7, 0); sc.add(this.playerLight);
+
+    this.buildGround();
+    this.buildStars();
+    this.buildNebula();
+    this.buildBorder();
+    this.buildComets();
+
+    addEventListener('resize', () => this.resize());
+  },
+
+  buildGround(){
+    // 主网格
+    const g1 = new THREE.GridHelper(CFG.arena * 2.4, 60, 0x1c5f78, 0x0e3244);
+    g1.material.transparent = true; g1.material.opacity = 0.55;
+    g1.position.y = 0;
+    this.scene.add(g1);
+    g1.material.vertexColors = false; g1.material.needsUpdate = true; this.grid1 = g1;  // 关闭顶点色→纯 accent 染色，强化星域辨识
+    // 细网格
+    const g2 = new THREE.GridHelper(CFG.arena * 2.4, 180, 0x0a2634, 0x0a2634);
+    g2.material.transparent = true; g2.material.opacity = 0.24;
+    g2.position.y = -0.02;
+    this.scene.add(g2);
+    g2.material.vertexColors = false; g2.material.needsUpdate = true; this.grid2 = g2;
+    // 暗色地板（让贴地发光片有底）
+    const floor = new THREE.Mesh(
+      new THREE.CircleGeometry(CFG.arena * 1.35, 64),
+      new THREE.MeshBasicMaterial({ color: 0x040810 }));
+    floor.rotation.x = -Math.PI / 2; floor.position.y = -0.05;
+    this.scene.add(floor);
+    // 中心辉光晕（加法混合，给战场一点纵深与氛围，边缘自然淡出）
+    const fg = new THREE.Mesh(
+      new THREE.CircleGeometry(CFG.arena * 1.15, 64),
+      new THREE.MeshBasicMaterial({ color: 0x0c2a3e, transparent: true, opacity: 0.55,
+        blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+    fg.rotation.x = -Math.PI / 2; fg.position.y = -0.04;
+    this.scene.add(fg); this.floorGlow = fg;
+    // 地面扫描波：缓慢旋转的扇形扫掠，强化"战场雷达"氛围（fog:false 保证可见）
+    const sweep = new THREE.Mesh(
+      new THREE.CircleGeometry(CFG.arena * 1.2, 60, 0, 0.55),
+      new THREE.MeshBasicMaterial({ color: 0x38f0ff, transparent: true, opacity: 0.07,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false }));
+    sweep.rotation.x = -Math.PI / 2; sweep.position.y = 0.02;
+    this.scene.add(sweep); this.scan = sweep;
+  },
+
+  buildStars(){
+    const N = 1700, pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
+    const c = new THREE.Color();
+    for (let i = 0; i < N; i++){
+      const r = Util.rand(90, 300), a = Math.random() * Util.TAU;
+      pos[i*3]   = Math.cos(a) * r;
+      pos[i*3+1] = Util.rand(-40, 140);
+      pos[i*3+2] = Math.sin(a) * r;
+      c.setHSL(Util.rand(0.5, 0.66), Util.rand(0.3, 0.9), Util.rand(0.45, 0.98));
+      col[i*3] = c.r; col[i*3+1] = c.g; col[i*3+2] = c.b;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    this.stars = new THREE.Points(g, new THREE.PointsMaterial({
+      size: 1.6, vertexColors: true, transparent: true, opacity: 0.9,
+      blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true, fog: false }));
+    this.scene.add(this.stars);
+    // 稀疏亮星层（更大更亮，用于闪烁），fog:false 保证不被雾吃掉
+    const N2 = 260, p2 = new Float32Array(N2 * 3);
+    for (let i = 0; i < N2; i++){
+      const r = Util.rand(120, 320), a = Math.random() * Util.TAU;
+      p2[i*3] = Math.cos(a) * r; p2[i*3+1] = Util.rand(-30, 150); p2[i*3+2] = Math.sin(a) * r;
+    }
+    const g2 = new THREE.BufferGeometry();
+    g2.setAttribute('position', new THREE.BufferAttribute(p2, 3));
+    this.starBright = new THREE.Points(g2, new THREE.PointsMaterial({
+      size: 3.4, color: 0xbfe6ff, transparent: true, opacity: 0.7,
+      blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true, fog: false }));
+    this.scene.add(this.starBright);
+  },
+
+  /** 星云：5 片大型加法混合云，缓慢漂移 + 呼吸脉冲，制造视差纵深。
+   *  注意 fog:false —— 否则会被场景雾按距离吞掉，背景变死黑。*/
+  buildNebula(){
+    const mk = (r, gg, b, sz, x, y, z, op) => {
+      const cvs = document.createElement('canvas'); cvs.width = cvs.height = 256;
+      const g = cvs.getContext('2d');
+      const grd = g.createRadialGradient(128, 128, 8, 128, 128, 124);
+      grd.addColorStop(0,   `rgba(${r},${gg},${b},${op})`);
+      grd.addColorStop(0.5, `rgba(${r},${gg},${b},${op * 0.5})`);
+      grd.addColorStop(1,   'rgba(0,0,0,0)');
+      g.fillStyle = grd; g.fillRect(0, 0, 256, 256);
+      const tex = new THREE.CanvasTexture(cvs);
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(sz, sz),
+        new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: op,
+          blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+      m.position.set(x, y, z);
+      m.userData.bop = op;
+      this.scene.add(m);
+      return m;
+    };
+    this.nebula = [
+      mk(110,  60, 200, 175,  -70, 34, -130, 0.50),  // 紫
+      mk( 30, 110, 175, 145,   90, 22, -100, 0.46),  // 蓝
+      mk(190,  55, 120, 125,   35, 60, -160, 0.42),  // 粉
+      mk( 40, 170, 180, 105, -110, 46, -110, 0.40),  // 青
+      mk(150,  70, 220,  95,  120, 30, -175, 0.38),  //  Violet
+    ];
+  },
+
+  buildBorder(){
+    const g = new THREE.Group();
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(CFG.arena, 0.34, 6, 128),
+      new THREE.MeshBasicMaterial({ color: 0x38f0ff, transparent: true, opacity: 0.4 }));
+    ring.rotation.x = Math.PI / 2;
+    g.add(ring);
+    // 能量护盾脉冲环（内侧，加法发光，帧循环里呼吸闪烁）
+    const pulse = new THREE.Mesh(
+      new THREE.TorusGeometry(CFG.arena - 0.45, 0.55, 8, 160),
+      new THREE.MeshBasicMaterial({ color: 0x38f0ff, transparent: true, opacity: 0.3,
+        blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+    pulse.rotation.x = Math.PI / 2;
+    g.add(pulse); this.borderPulse = pulse;
+    // 边界立柱
+    for (let i = 0; i < 48; i++){
+      const a = i / 48 * Util.TAU;
+      const p = new THREE.Mesh(
+        new THREE.BoxGeometry(0.4, 4.5, 0.4),
+        new THREE.MeshBasicMaterial({ color: 0x155f7a, transparent: true, opacity: 0.55 }));
+      p.position.set(Math.cos(a) * CFG.arena, 2.2, Math.sin(a) * CFG.arena);
+      g.add(p);
+    }
+    this.border = g;
+    this.borderRing = ring; this.borderPulse = pulse;
+    this.borderCols = g.children.filter(c => c !== ring && c !== pulse);
+    this.scene.add(g);
+  },
+
+  shake(power, time){
+    this.shakeP = Math.max(this.shakeP, power);
+    this.shakeT = Math.max(this.shakeT, time || 0.22);
+  },
+
+  /** 背景彗星流：远景几条加法混合的拖尾，缓慢公转 + 呼吸明灭，给太空纵深 */
+  buildComets(){
+    const cvs = document.createElement('canvas'); cvs.width = 16; cvs.height = 64;
+    const g = cvs.getContext('2d');
+    const grd = g.createLinearGradient(0, 0, 0, 64);   // 头亮尾淡
+    grd.addColorStop(0,   'rgba(170,225,255,0)');
+    grd.addColorStop(0.7, 'rgba(150,220,255,0.5)');
+    grd.addColorStop(1,   'rgba(255,255,255,0.95)');
+    g.fillStyle = grd; g.fillRect(0, 0, 16, 64);
+    const tex = new THREE.CanvasTexture(cvs);
+    this.comets = [];
+    for (let i = 0; i < 6; i++){
+      const m = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 9),
+        new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.5,
+          blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+      const r = Util.rand(150, 300), a = Math.random() * Util.TAU;
+      m.position.set(Math.cos(a) * r, Util.rand(-10, 60), Math.sin(a) * r);
+      m.userData = { a, r, sp: Util.rand(0.02, 0.06) * (Math.random() < 0.5 ? 1 : -1), y: m.position.y };
+      this.scene.add(m); this.comets.push(m);
+    }
+  },
+
+  updateCamera(dt, tx, tz){
+    this.camX = Util.lerp(this.camX, tx, 1 - Math.pow(1 - CFG.camLerp, dt * 60));
+    this.camZ = Util.lerp(this.camZ, tz, 1 - Math.pow(1 - CFG.camLerp, dt * 60));
+    let ox = 0, oz = 0, oy = 0;
+    if (this.shakeT > 0){
+      this.shakeT -= dt;
+      const k = this.shakeP * Math.max(0, this.shakeT / 0.22);
+      ox = Util.rand(-k, k); oz = Util.rand(-k, k); oy = Util.rand(-k, k) * 0.5;
+      if (this.shakeT <= 0) this.shakeP = 0;
+    }
+    this.camera.position.set(this.camX + ox, CFG.camH + oy, this.camZ + CFG.camBack + oz);
+    this.camera.lookAt(this.camX + ox * 0.4, 0, this.camZ + oz * 0.4);
+    this.playerLight.position.set(tx, 8, tz);
+  },
+
+  resize(){
+    if (!this.renderer) return;
+    this.camera.aspect = innerWidth / innerHeight;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(innerWidth, innerHeight);
+  },
+
+  /** 按当前星域切换整体氛围：背景 + 雾色 + 网格/边界/星云/星空/主角光 全部随 accent 变化（地图风格核心） */
+  applyTheme(st){
+    if (!this.scene || !st) return;
+    const accent = new THREE.Color(st.accent);
+    if (this.scene.background && this.scene.background.setHex) this.scene.background.setHex(st.bg);
+    if (this.scene.fog && this.scene.fog.color) this.scene.fog.color.setHex(st.fog);
+    if (this.floorGlow) this.floorGlow.material.color.copy(accent).multiplyScalar(0.25).addScalar(0.02);
+    if (this.grid1) this.grid1.material.color.copy(accent).multiplyScalar(0.55);
+    if (this.grid2) this.grid2.material.color.copy(accent).multiplyScalar(0.32);
+    if (this.borderRing)  this.borderRing.material.color.copy(accent);
+    if (this.borderPulse) this.borderPulse.material.color.copy(accent);
+    if (this.borderCols) for (const c of this.borderCols) if (c.material && c.material.color) c.material.color.copy(accent).multiplyScalar(0.5);
+    if (this.starBright) this.starBright.material.color.copy(accent).lerp(new THREE.Color(0xffffff), 0.4);
+    if (this.playerLight) this.playerLight.color.copy(accent);
+    if (this.nebula) for (const m of this.nebula) m.material.color.copy(accent);
+  },
+
+  /** 世界坐标 → 屏幕像素（伤害数字用） */
+  _v: null,
+  toScreen(x, y, z){
+    if (!this._v) this._v = new THREE.Vector3();
+    this._v.set(x, y, z).project(this.camera);
+    return { x: (this._v.x * 0.5 + 0.5) * innerWidth,
+             y: (-this._v.y * 0.5 + 0.5) * innerHeight,
+             vis: this._v.z < 1 };
+  },
+};
+
+/* ============================ Input 输入 ============================ */
+const Input = {
+  keys: {}, ax: 0, az: 0, dashQueued: false,
+  capturing: null, _onRebind: null,
+  init(){
+    addEventListener('keydown', (e) => {
+      // 重映射模式：捕获下一个按键（Esc 取消）
+      if (this.capturing){
+        const code = e.code;
+        if (code !== 'Escape'){ Settings.binds[this.capturing] = code; Settings.save(); }
+        const cb = this._onRebind; this.capturing = null; this._onRebind = null;
+        if (cb) cb();
+        e.preventDefault(); return;
+      }
+      if (this.keys[e.code]) return;
+      this.keys[e.code] = true;
+      const b = Settings.binds;
+      if (e.code === b.dash){ this.dashQueued = true; e.preventDefault(); }
+      if (e.code === b.pause || e.code === 'Escape') Game.togglePause();
+      if (e.code === b.form) Wingmen.cycleFormation();
+      if (Game.state === 'LEVELUP'){
+        if (e.code === 'Digit1') Game.pickCard(0);
+        if (e.code === 'Digit2') Game.pickCard(1);
+        if (e.code === 'Digit3') Game.pickCard(2);
+      }
+      if (e.code === 'Enter' && Game.state === 'GAMEOVER') Game.start(Game.endless, Game.hell);
+    });
+    addEventListener('keyup', (e) => { this.keys[e.code] = false; });
+    addEventListener('blur', () => { this.keys = {}; this.capturing = null; this._onRebind = null; });
+  },
+  update(){
+    const k = this.keys, b = Settings.binds;
+    let x = 0, z = 0;
+    if (k[b.left]  || k.ArrowLeft)  x -= 1;
+    if (k[b.right] || k.ArrowRight) x += 1;
+    if (k[b.up]    || k.ArrowUp)    z -= 1;
+    if (k[b.down]  || k.ArrowDown)  z += 1;
+    const l = Math.hypot(x, z);
+    if (l > 0){ x /= l; z /= l; }
+    this.ax = x; this.az = z;
+  },
+  consumeDash(){ const d = this.dashQueued; this.dashQueued = false; return d; },
+  // 开始重映射某个动作；onDone 在捕获完成后回调（用于刷新 UI）
+  rebind(action, onDone){ this.capturing = action; this._onRebind = onDone; },
+};
+
+/* ============================ 持久化设置 ============================ */
+const Settings = {
+  vol:   { master: 0.5, sfx: 0.9, music: 0.42 },
+  binds: { up:'KeyW', down:'KeyS', left:'KeyA', right:'KeyD', dash:'Space', form:'KeyF', pause:'KeyP' },
+  load(){
+    try {
+      const s = JSON.parse(localStorage.getItem('sts_settings') || 'null');
+      if (s){
+        if (s.vol)   Object.assign(this.vol, s.vol);
+        if (s.binds) Object.assign(this.binds, s.binds);
+      }
+    } catch (e){}
+  },
+  save(){
+    try { localStorage.setItem('sts_settings', JSON.stringify({ vol: this.vol, binds: this.binds })); } catch (e){}
+  },
+};
+Settings.load();
+
+/* ============================ Audio 合成音效 ============================ */
+/* 没有音频素材，用 WebAudio 现场合成。手感提升非常明显。*/
+const Audio2 = {
+  ctx: null, master: null, ok: false, muted: false,
+  init(){
+    if (this.ctx) return;
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      this.ctx = new AC();
+      this._mg = Settings.vol.master;                  // 主音量目标
+      this.master = this.ctx.createGain();
+      this.master.gain.value = this.muted ? 0 : this._mg;
+      this.master.connect(this.ctx.destination);
+      this.sfxBus = this.ctx.createGain();              // 音效总线
+      this.sfxBus.gain.value = Settings.vol.sfx; this.sfxBus.connect(this.master);
+      this.musicBus = this.ctx.createGain();            // 背景音乐总线
+      this.musicBus.gain.value = Settings.vol.music; this.musicBus.connect(this.master);
+      // 预生成白噪声 buffer（鼓点 hi-hat / 爆炸质感复用）
+      const n = Math.floor(this.ctx.sampleRate * 0.4);
+      this._noiseBuf = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
+      const d = this._noiseBuf.getChannelData(0);
+      for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+      this.ok = true;
+    } catch (e){ this.ok = false; }
+  },
+  resume(){ if (this.ok && this.ctx.state === 'suspended') this.ctx.resume().catch(() => {}); },
+  _env(node, t0, a, d, peak){
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(peak, t0 + a);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + a + d);
+    node.connect(g); g.connect(this.sfxBus);
+    return g;
+  },
+  tone(freq, dur, type, vol, slideTo){
+    if (!this.ok || this.muted) return;
+    try {
+      const t0 = this.ctx.currentTime;
+      const o = this.ctx.createOscillator();
+      o.type = type || 'square';
+      o.frequency.setValueAtTime(freq, t0);
+      if (slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(30, slideTo), t0 + dur);
+      this._env(o, t0, 0.004, dur, vol == null ? 0.2 : vol);
+      o.start(t0); o.stop(t0 + dur + 0.05);
+    } catch (e){}
+  },
+  noise(dur, vol, hp){
+    if (!this.ok || this.muted) return;
+    try {
+      const t0 = this.ctx.currentTime;
+      const n = Math.floor(this.ctx.sampleRate * dur);
+      const buf = this.ctx.createBuffer(1, n, this.ctx.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+      const s = this.ctx.createBufferSource(); s.buffer = buf;
+      const f = this.ctx.createBiquadFilter();
+      f.type = 'lowpass'; f.frequency.value = hp || 900;
+      s.connect(f);
+      this._env(f, t0, 0.005, dur, vol == null ? 0.25 : vol);
+      s.start(t0);
+    } catch (e){}
+  },
+  shoot(){ this.tone(Util.rand(680, 780), 0.05, 'square', 0.055, 240); },
+  missile(){ this.noise(0.12, 0.1, 1200); this.tone(200, 0.16, 'sawtooth', 0.08, 620); },
+  laser(){ this.tone(1500, 0.09, 'sawtooth', 0.06, 480); this.tone(2100, 0.05, 'sine', 0.03, 700); },
+  hit(){ this.tone(Util.rand(320, 420), 0.045, 'square', 0.055, 180); this.noise(0.03, 0.06, 4000); },
+  kill(){ this.noise(0.18, 0.18, 1600); this.tone(Util.rand(110, 140), 0.14, 'triangle', 0.1, 45); this.tone(820, 0.05, 'square', 0.04, 300); },
+  boom(){ this.noise(0.45, 0.34, 700); this.tone(70, 0.4, 'sine', 0.2, 28); },
+  gem(){ this.tone(Util.rand(900, 1150), 0.055, 'sine', 0.05, 1500); },
+  levelup(){ [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => this.tone(f, 0.16, 'triangle', 0.15), i * 72)); },
+  hurt(){ this.tone(160, 0.2, 'sawtooth', 0.16, 55); this.noise(0.2, 0.14, 500); },
+  dash(){ this.tone(340, 0.14, 'sine', 0.1, 900); },
+  bossWarn(){ [110, 110, 146].forEach((f, i) => setTimeout(() => this.tone(f, 0.34, 'sawtooth', 0.2), i * 260)); },
+  win(){ [523, 659, 784, 1047, 1319].forEach((f, i) => setTimeout(() => this.tone(f, 0.3, 'triangle', 0.18), i * 130)); },
+  lose(){ [400, 330, 260, 180].forEach((f, i) => setTimeout(() => this.tone(f, 0.4, 'sawtooth', 0.16), i * 170)); },
+
+  // —— 武器专属开火音：贴合各自特点，不再全部复用 shoot ——
+  cannonPulse(){ this.tone(Util.rand(540, 640), 0.07, 'square', 0.06, 180); },
+  spreadShot(){ this.noise(0.1, 0.16, 2400); this.tone(Util.rand(360, 440), 0.06, 'square', 0.045, 150); },
+  sawWhirl(){ this.tone(150, 0.14, 'sawtooth', 0.08, 240); this.tone(900, 0.05, 'square', 0.03, 1300); },
+  chainZap(){ this.tone(Util.rand(1400, 1800), 0.05, 'square', 0.04, 600); this.noise(0.06, 0.1, 5200); },
+  novaBurst(){ this.boom(); this.tone(220, 0.5, 'sawtooth', 0.08, 880); },
+  droneBlip(){ this.tone(Util.rand(1100, 1300), 0.05, 'sine', 0.05, 1700); },
+
+  // —— 三种新武器专属音 ——
+  rail(){ this.tone(Util.rand(170, 230), 0.13, 'sawtooth', 0.08, 60); this.tone(Util.rand(900, 1250), 0.05, 'square', 0.03, 1900); },
+  flame(){ this.noise(0.16, 0.12, 1700); this.tone(Util.rand(200, 300), 0.12, 'sawtooth', 0.05, 520); },
+  pulse(){ this.tone(Util.rand(300, 380), 0.18, 'sine', 0.07, 760); this.tone(120, 0.22, 'sine', 0.05, 50); },
+
+  /* ===================== 背景音乐：实时合成的合成波循环 ===================== */
+  // 4 小节循环，vi–IV–I–V（A 小调），每小节：低音根音 + 和弦琶音 + 旋律 + 鼓点
+  mtof(m){ return 440 * Math.pow(2, (m - 69) / 12); },
+  musicBars: [
+    { bass: 45, arp: [57, 60, 64, 69], lead: [69, 72, 76] }, // Am
+    { bass: 41, arp: [53, 57, 60, 65], lead: [65, 69, 72] }, // F
+    { bass: 48, arp: [60, 64, 67, 72], lead: [72, 76, 79] }, // C
+    { bass: 43, arp: [55, 59, 62, 67], lead: [67, 71, 74] }, // G
+  ],
+  music: { on: false, step: 0, nextT: 0, timer: null, bpm: 122 },
+  startMusic(){
+    if (!this.ok || this.music.on) return;
+    this.music.on = true;
+    this.music.step = 0;
+    this.music.nextT = this.ctx.currentTime + 0.08;
+    try { this.musicBus.gain.setTargetAtTime(this.muted ? 0 : Settings.vol.music, this.ctx.currentTime, 0.4); } catch (e){}
+    this.music.timer = setInterval(() => this._sched(), 25);
+  },
+  stopMusic(){
+    if (!this.music.on) return;
+    this.music.on = false;
+    if (this.music.timer) clearInterval(this.music.timer);
+    this.music.timer = null;
+    try { this.musicBus.gain.setTargetAtTime(0, this.ctx.currentTime, 0.35); } catch (e){}
+  },
+  _sched(){
+    if (!this.ok) return;
+    this._updateMusic();
+    const m = this.music, spb = 60 / m.bpm, sps = spb / 4;
+    try {
+      while (m.nextT < this.ctx.currentTime + 0.14){
+        this._step(m.step, m.nextT);
+        m.step = (m.step + 1) % 64;            // 4 小节 × 16 步
+        m.nextT += sps;
+      }
+    } catch (e){}
+  },
+  // 自适应：综合「敌人密度 + 波次推进 + Boss + 残血」计算强度与速度
+  _updateMusic(){
+    let mi = 0;
+    try {
+      const ec = (typeof Enemies !== 'undefined' && Enemies.pool) ? (Enemies.pool.active.length || 0) : 0;
+      mi += Math.min(1.6, ec / 38);                                   // 敌人密度
+      const wv = (typeof Game !== 'undefined' && Game.wave) ? Game.wave : 1;
+      mi += Math.min(0.5, (wv - 1) * 0.02);                            // 波次推进
+      this._mboss = (typeof Boss !== 'undefined' && Boss.active);       // Boss 激昂
+      if (this._mboss) mi = Math.max(mi, 2.2);
+      this._mlow = (typeof Player !== 'undefined' && Player.maxHp > 0) && (Player.hp / Player.maxHp) < 0.3; // 残血紧张
+    } catch (e){ this._mboss = false; this._mlow = false; }
+    this._mi = mi;
+    const wv = (typeof Game !== 'undefined' && Game.wave) ? Game.wave : 1;
+    const target = (this._mboss ? 144 : 120) + Math.min(26, (wv - 1) * 0.9); // 波次 / Boss 平滑提速
+    this.music.bpm += (target - this.music.bpm) * 0.04;
+  },
+  _step(step, t){
+    if (this.muted) return;
+    const bar = (step >> 4) & 3, s = step & 15, B = this.musicBars[bar];
+    const intensity = this._mi || 0;
+    if (s === 0 || s === 8) this._at(this.mtof(B.bass), t, 0.22, 'triangle', 0.16);
+    else if (s === 6 || s === 14) this._at(this.mtof(B.bass + 12), t, 0.14, 'triangle', 0.12);
+    if ((s & 1) === 0){ const note = B.arp[(s >> 1) % B.arp.length]; this._at(this.mtof(note + 12), t, 0.13, 'square', 0.05); }
+    if (s === 0) this._at(this.mtof(B.lead[0]), t, 0.34, 'sawtooth', 0.05);
+    else if (s === 6) this._at(this.mtof(B.lead[1]), t, 0.30, 'sawtooth', 0.045);
+    else if (s === 10) this._at(this.mtof(B.lead[2]), t, 0.26, 'sawtooth', 0.04);
+    // 高强度层：敌人多 / 波次高时叠 16 分琶音 + 高八度 lead
+    if (intensity >= 1 && (s & 1) === 1){ const note = B.arp[s % B.arp.length]; this._at(this.mtof(note + 24), t, 0.08, 'square', 0.03); }
+    if (intensity >= 2 && (s === 4 || s === 12)) this._at(this.mtof(B.lead[0] + 12), t, 0.18, 'sawtooth', 0.035);
+    // Boss 低音脉冲 / 残血不祥低鸣（自适应情绪层）
+    if (this._mboss && (s === 2 || s === 10)) this._at(this.mtof(B.bass - 12), t, 0.16, 'sawtooth', 0.05);
+    if (this._mlow && (s === 0 || s === 8)) this._at(this.mtof(33), t, 0.7, 'sine', 0.05);
+    // 和弦 pad 铺底：每小节开头铺一层根+五度+八度的长音垫（sawtooth 缓入缓出），氛围更厚
+    if (s === 0) this._pad(B.bass, t, step, 0.05 + intensity * 0.02);
+    if (s === 0 || s === 8) this._hat(t, 0.05 + intensity * 0.03);
+    if (s === 0 || s === 4 || s === 8 || s === 12) this._kick(t);
+    if ((s & 1) === 1) this._hat(t);
+  },
+  // 长音 pad：整小节持续，缓入缓出（区别于 _at 的短音）
+  _pad(rootMidi, t, step, vol){
+    const spb = 60 / this.music.bpm;
+    const dur = spb * 2;                                 // 两小节长音垫
+    const chord = [rootMidi, rootMidi + 7, rootMidi + 12]; // 根 + 五度 + 八度
+    for (const m of chord){
+      const o = this.ctx.createOscillator(); o.type = 'sawtooth';
+      o.frequency.setValueAtTime(this.mtof(m), t);
+      const f = this.ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 900;
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(vol, t + 0.25);
+      g.gain.setValueAtTime(vol, t + dur - 0.3);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(f); f.connect(g); g.connect(this.musicBus);
+      o.start(t); o.stop(t + dur + 0.05);
+    }
+  },
+  _at(freq, t, dur, type, vol){
+    const o = this.ctx.createOscillator(); o.type = type;
+    o.frequency.setValueAtTime(freq, t);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(this.musicBus);
+    o.start(t); o.stop(t + dur + 0.03);
+  },
+  _kick(t){
+    const o = this.ctx.createOscillator(); o.type = 'sine';
+    o.frequency.setValueAtTime(150, t);
+    o.frequency.exponentialRampToValueAtTime(45, t + 0.12);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.5, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+    o.connect(g); g.connect(this.musicBus);
+    o.start(t); o.stop(t + 0.18);
+  },
+  _hat(t, vol){
+    const s = this.ctx.createBufferSource(); s.buffer = this._noiseBuf;
+    const f = this.ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 7200;
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(vol == null ? 0.06 : vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
+    s.connect(f); f.connect(g); g.connect(this.musicBus);
+    s.start(t); s.stop(t + 0.06);
+  },
+  /** 独立音量控制：实时写入对应总线（静音时主/音乐总线压到 0） */
+  setMasterVol(v){
+    Settings.vol.master = Math.max(0, Math.min(1, v));
+    this._mg = Settings.vol.master;
+    if (this.ctx){ try { this.master.gain.setTargetAtTime(this.muted ? 0 : Settings.vol.master, this.ctx.currentTime, 0.05); } catch (e){} }
+  },
+  setSfxVol(v){
+    Settings.vol.sfx = Math.max(0, Math.min(1, v));
+    if (this.ctx){ try { this.sfxBus.gain.setTargetAtTime(Settings.vol.sfx, this.ctx.currentTime, 0.05); } catch (e){} }
+  },
+  setMusicVol(v){
+    Settings.vol.music = Math.max(0, Math.min(1, v));
+    if (this.ctx){ try { this.musicBus.gain.setTargetAtTime(this.muted ? 0 : Settings.vol.music, this.ctx.currentTime, 0.05); } catch (e){} }
+  },
+  /** 一键静音：同时压住音乐与音效总线 */
+  toggleMute(){
+    if (!this.ctx) this.init();
+    if (!this.ok) return this.muted;
+    this.resume();
+    this.muted = !this.muted;
+    try {
+      this.master.gain.setTargetAtTime(this.muted ? 0 : Settings.vol.master, this.ctx.currentTime, 0.05);
+      this.musicBus.gain.setTargetAtTime(this.muted ? 0 : Settings.vol.music, this.ctx.currentTime, 0.05);
+    } catch (e){}
+    return this.muted;
+  },
+
+  frostZap(){ this.tone(Util.rand(1800, 2400), 0.05, 'square', 0.04, 700); this.noise(0.05, 0.1, 6000); },
+  meteorWarn(){ this.tone(140, 0.18, 'sawtooth', 0.06, 90); },
+  meteorFall(){ this.noise(0.18, 0.5, 800); this.tone(90, 0.3, 'sawtooth', 0.09, 60); },
+  stormCrack(){ this.tone(Util.rand(1200, 1600), 0.06, 'square', 0.05, 500); this.noise(0.08, 0.2, 4000); },
+
+  /* ===================== C② 新武器专属音 ===================== */
+  blackhole(){ this.tone(Util.rand(60, 100), 0.5, 'sine', 0.12, 30); this.noise(0.3, 0.12, 320); },
+  phase(){ this.tone(Util.rand(520, 720), 0.18, 'sine', 0.06, 1200); this.noise(0.1, 0.06, 4200); },
+  photon(){ this.tone(Util.rand(1600, 2100), 0.05, 'square', 0.04, 850); this.noise(0.04, 0.08, 6200); },
+  tractor(){ this.tone(Util.rand(120, 180), 0.12, 'sawtooth', 0.05, 60); this.tone(Util.rand(300, 420), 0.1, 'sine', 0.03, 200); },
+  rotor(){ this.tone(Util.rand(900, 1200), 0.05, 'square', 0.03, 1400); },
+  mine(){ this.noise(0.18, 0.3, 1200); this.tone(110, 0.3, 'sawtooth', 0.1, 60); },
+  nano(){ this.tone(Util.rand(700, 1000), 0.12, 'sine', 0.05, 1400); this.tone(Util.rand(1100, 1500), 0.1, 'sine', 0.03, 1800); },
+};
+
+/* ============================ FX 特效 ============================ */
+const FX = {
+  pool: null, group: null,
+  dmgNodes: [], dmgFree: [],
+
+  init(){
+    this.group = new THREE.Group();
+    World.scene.add(this.group);
+
+    const sharedGeo = new THREE.SphereGeometry(1, 6, 5);
+    this.pool = Pool.create(520, () => {
+      const m = new THREE.Mesh(sharedGeo, new THREE.MeshBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: 1,
+        blending: THREE.AdditiveBlending, depthWrite: false }));
+      m.visible = false;
+      this.group.add(m);
+      return { mesh: m, x:0, y:0, z:0, vx:0, vy:0, vz:0, life:0, max:1, s0:1, s1:0, drag:0 };
+    });
+
+    // 冲击波环（独立小池）
+    const ringGeo = new THREE.RingGeometry(0.72, 1, 26);
+    this.ringPool = Pool.create(24, () => {
+      const m = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: 1, side: THREE.DoubleSide,
+        blending: THREE.AdditiveBlending, depthWrite: false }));
+      m.rotation.x = -Math.PI / 2; m.visible = false;
+      this.group.add(m);
+      return { mesh: m, life: 0, max: 1, r0: 1, r1: 6 };
+    });
+
+    this.dmgLayer = document.getElementById('dmgLayer');
+  },
+
+  particle(x, y, z, color, opt){
+    const o = this.pool.get(); if (!o) return;
+    const q = opt || {};
+    o.x = x; o.y = y; o.z = z;
+    o.vx = q.vx || 0; o.vy = q.vy || 0; o.vz = q.vz || 0;
+    o.life = 0; o.max = q.life || 0.5;
+    o.s0 = q.s0 || 0.4; o.s1 = q.s1 == null ? 0 : q.s1;
+    o.drag = q.drag == null ? 2.4 : q.drag;
+    o.mesh.material.color.setHex(color);
+    o.mesh.material.opacity = 1;
+    o.mesh.scale.setScalar(o.s0);
+    o.mesh.position.set(x, y, z);
+    o.mesh.visible = true;
+  },
+
+  burst(x, z, color, n, power, y){
+    const yy = y == null ? 0.7 : y;
+    for (let i = 0; i < n; i++){
+      const a = Math.random() * Util.TAU, e = Util.rand(0.1, 1.1);
+      const sp = Util.rand(0.35, 1) * power;
+      this.particle(x, yy, z, color, {
+        vx: Math.cos(a) * sp, vz: Math.sin(a) * sp, vy: e * sp * 0.5,
+        life: Util.rand(0.28, 0.62), s0: Util.rand(0.22, 0.5), drag: 3.1 });
+    }
+  },
+
+  /** 命中/受击火花：同色四溅 + 白色核心，统一打击感 */
+  hitSpark(x, z, color, y){
+    const yy = y == null ? 0.7 : y;
+    this.burst(x, yy, color, 5, 4.2, yy);
+    this.burst(x, yy, 0xffffff, 3, 3.4, yy);
+  },
+
+  ring(x, z, color, r1, life){
+    const o = this.ringPool.get(); if (!o) return;
+    o.life = 0; o.max = life || 0.42; o.r0 = 0.5; o.r1 = r1 || 6;
+    o.mesh.position.set(x, 0.16, z);
+    o.mesh.material.color.setHex(color);
+    o.mesh.material.opacity = 0.85;
+    o.mesh.scale.setScalar(o.r0);
+    o.mesh.visible = true;
+  },
+
+  /** 医疗十字脉冲：四向 + 字扩散 + 中心微闪，强化"治疗"辨识 */
+  cross(x, z, color){
+    for (const [ax, az] of [[1, 0], [-1, 0], [0, 1], [0, -1]]){
+      this.particle(x, 0.6, z, color, { vx: ax * 5.2, vz: az * 5.2, vy: 0.5,
+        life: 0.42, s0: 0.5, s1: 0, drag: 2 });
+    }
+    this.burst(x, 0.6, color, 4, 3, 0.6);
+  },
+
+  explode(x, z, color, scale){
+    const s = scale || 1;
+    this.burst(x, z, color, Math.round(14 * s), 9 * s);
+    this.burst(x, z, 0xffffff, Math.round(5 * s), 6 * s);
+    this.ring(x, z, color, 5.5 * s, 0.4);
+  },
+
+  /** 飘字伤害数字（DOM，比 3D 文字便宜） */
+  dmgText(x, z, val, crit, color){
+    if (this.dmgNodes.length > 26) return;              // 上限保护
+    const p = World.toScreen(x, 1.4, z);
+    if (!p.vis) return;
+    let el = this.dmgFree.pop();
+    if (!el){ el = document.createElement('div'); this.dmgLayer.appendChild(el); }
+    el.className = 'dmg' + (crit ? ' crit' : '');
+    el.textContent = crit ? Math.round(val) + '!' : Math.round(val);
+    el.style.color = color || (crit ? '#ffcc33' : '#ffffff');
+    el.style.display = 'block';
+    const node = { el, x: p.x, y: p.y, vy: Util.rand(-46, -66), vx: Util.rand(-16, 16), t: 0 };
+    this.dmgNodes.push(node);
+  },
+
+  update(dt){
+    this.pool.each(o => {
+      o.life += dt;
+      if (o.life >= o.max){ o.mesh.visible = false; return true; }
+      const k = Math.exp(-o.drag * dt);
+      o.vx *= k; o.vz *= k; o.vy = o.vy * k - 5.5 * dt;
+      o.x += o.vx * dt; o.y += o.vy * dt; o.z += o.vz * dt;
+      if (o.y < 0.05){ o.y = 0.05; o.vy *= -0.35; }
+      const t = o.life / o.max;
+      o.mesh.position.set(o.x, o.y, o.z);
+      o.mesh.scale.setScalar(Util.lerp(o.s0, o.s1, t));
+      o.mesh.material.opacity = 1 - t * t;
+      return false;
+    });
+
+    this.ringPool.each(o => {
+      o.life += dt;
+      if (o.life >= o.max){ o.mesh.visible = false; return true; }
+      const t = o.life / o.max;
+      o.mesh.scale.setScalar(Util.lerp(o.r0, o.r1, 1 - Math.pow(1 - t, 2)));
+      o.mesh.material.opacity = 0.85 * (1 - t);
+      return false;
+    });
+
+    for (let i = this.dmgNodes.length - 1; i >= 0; i--){
+      const n = this.dmgNodes[i];
+      n.t += dt;
+      if (n.t > 0.72){
+        n.el.style.display = 'none';
+        this.dmgFree.push(n.el);
+        this.dmgNodes.splice(i, 1);
+        continue;
+      }
+      n.vy += 118 * dt;
+      n.x += n.vx * dt; n.y += n.vy * dt;
+      n.el.style.transform = 'translate(' + n.x.toFixed(1) + 'px,' + n.y.toFixed(1) + 'px)';
+      n.el.style.opacity = String(1 - Math.pow(n.t / 0.72, 3));
+    }
+  },
+
+  reset(){
+    this.pool.each(o => { o.mesh.visible = false; return true; });
+    this.ringPool.each(o => { o.mesh.visible = false; return true; });
+    for (const n of this.dmgNodes){ n.el.style.display = 'none'; this.dmgFree.push(n.el); }
+    this.dmgNodes.length = 0;
+  },
+};
+
+/* ============================ Asteroids 陨石（地图障碍） ============================ */
+const Asteroids = {
+  pool: null, group: null, geos: null,
+
+  init(){
+    this.group = new THREE.Group();
+    World.scene.add(this.group);
+    this.geos = [];
+    for (let k = 0; k < 3; k++){
+      const g = (k === 1) ? new THREE.IcosahedronGeometry(1, 0) : new THREE.DodecahedronGeometry(1, 0);
+      const p = g.attributes.position;
+      for (let i = 0; i < p.count; i++){
+        const f = 0.72 + Math.random() * 0.55;            // 顶点扰动，做成不规则石块
+        p.setXYZ(i, p.getX(i) * f, p.getY(i) * f, p.getZ(i) * f);
+      }
+      g.computeVertexNormals();
+      this.geos.push(g);
+    }
+    // 矿物色板：灰岩 / 锈褐 / 青矿 / 紫晶（每颗陨石随机一种，增加地图层次）
+    this.tints = [0x6b7280, 0x7a6b5a, 0x586b82, 0x6e5a6b];
+    this.pool = Pool.create(40, () => {
+      const m = new THREE.Mesh(this.geos[0], new THREE.MeshLambertMaterial({
+        color: 0x6b7280, emissive: 0x10161f, emissiveIntensity: 0.5 }));
+      m.visible = false; this.group.add(m);
+      return { mesh: m, x:0, z:0, y:0, vx:0, vz:0, r:1.4,
+               rx:0, ry:0, rz:0, rot:0, alive:false, geo:0 };
+    });
+  },
+
+  spawn(x, z){
+    const o = this.pool.get(); if (!o) return null;
+    o.x = x; o.z = z; o.alive = true;
+    const a = Math.random() * Util.TAU, sp = Util.rand(1.4, 3.6);
+    o.vx = Math.cos(a) * sp; o.vz = Math.sin(a) * sp;
+    o.r = Util.rand(1.2, 2.4);
+    o.y = Util.rand(0.6, 1.7);
+    o.rx = Math.random() * Util.TAU; o.ry = Math.random() * Util.TAU; o.rz = Math.random() * Util.TAU;
+    o.rot = Util.rand(-0.6, 0.6);
+    o.geo = (Math.random() * 3) | 0;
+    o.mesh.geometry = this.geos[o.geo];
+    // 矿物配色 + 同色发光矿脉
+    const tt = Util.pick(this.tints);
+    o.mesh.material.color.setHex(tt);
+    o.mesh.material.emissive.setHex(tt);
+    o.mesh.material.emissiveIntensity = 0.22;
+    o.mesh.scale.setScalar(o.r);
+    o.mesh.position.set(x, o.y, z);
+    o.mesh.visible = true;
+    return o;
+  },
+
+  scatter(n){
+    for (let i = 0; i < n; i++){
+      const a = Math.random() * Util.TAU, r = Util.rand(8, CFG.arena - 4);
+      this.spawn(Math.cos(a) * r, Math.sin(a) * r);
+    }
+  },
+
+  /** 按星域切换陨石矿物配色（与敌人 / 背景一同换肤） */
+  retheme(tints){
+    this.tints = tints.slice();
+    const list = this.pool.active;
+    for (let i = 0; i < list.length; i++){
+      const o = list[i]; if (!o.alive) continue;
+      const tt = Util.pick(this.tints);
+      o.mesh.material.color.setHex(tt);
+      o.mesh.material.emissive.setHex(tt);
+    }
+  },
+
+  hitTest(x, z, r){
+    const list = this.pool.active;
+    for (let i = 0; i < list.length; i++){
+      const o = list[i]; if (!o.alive) continue;
+      const rr = r + o.r;
+      if (Util.dist2(x, z, o.x, o.z) <= rr * rr) return o;
+    }
+    return null;
+  },
+
+  update(dt){
+    const list = this.pool.active;
+    for (let i = 0; i < list.length; i++){
+      const o = list[i]; if (!o.alive) continue;
+      o.x += o.vx * dt; o.z += o.vz * dt;
+      const d = Math.hypot(o.x, o.z);
+      if (d > CFG.arena - o.r){                       // 边界反弹
+        const a = Math.atan2(o.z, o.x);
+        o.vx = Math.cos(a) * -Math.abs(o.vx);
+        o.vz = Math.sin(a) * -Math.abs(o.vz);
+      }
+      o.mesh.rotation.x += o.rx * dt * o.rot;
+      o.mesh.rotation.y += o.ry * dt * o.rot;
+      o.mesh.rotation.z += o.rz * dt * o.rot;
+      o.mesh.position.set(o.x, o.y, o.z);
+      // 撞玩家
+      if (Game.state === 'PLAYING' &&
+          Util.dist2(o.x, o.z, Player.x, Player.z) < (o.r + CFG.player.radius) ** 2){
+        Player.takeDamage(8);
+        const a = Math.atan2(o.x - Player.x, o.z - Player.z);
+        o.vx = Math.sin(a) * 8; o.vz = Math.cos(a) * 8;
+        Player.vx -= Math.sin(a) * 3; Player.vz -= Math.cos(a) * 3;
+      }
+    }
+  },
+
+  reset(){
+    this.pool.each(o => { if (o.alive){ o.alive = false; o.mesh.visible = false; return true; } return false; });
+  },
+};
+
+/* ============================ Minimap 小地图雷达 ============================ */
+const Minimap = {
+  cv: null, ctx: null, S: 150, enemyCol: null,
+  init(){
+    this.cv = document.getElementById('minimap');
+    if (!this.cv) return;
+    this.ctx = this.cv.getContext('2d');
+    this.S = this.cv.width;
+  },
+  /** 当前星域敌人色（小地图上跟着地图风格走） */
+  setAccent(hex){ this.enemyCol = hex; },
+  render(){
+    const c = this.ctx; if (!c) return;
+    const S = this.S, A = CFG.arena, sc = (S / 2 - 4) / A;
+    const X = (x) => S / 2 + x * sc, Y = (z) => S / 2 + z * sc;
+    c.clearRect(0, 0, S, S);
+    c.fillStyle = 'rgba(4,10,20,0.5)';
+    c.beginPath(); c.arc(S / 2, S / 2, S / 2 - 2, 0, Util.TAU); c.fill();
+    c.strokeStyle = 'rgba(56,240,255,0.5)'; c.lineWidth = 1.5; c.stroke();
+    c.fillStyle = '#6b7280';
+    for (const o of Asteroids.pool.active){ if (!o.alive) continue;
+      c.beginPath(); c.arc(X(o.x), Y(o.z), Math.max(1.5, o.r * sc), 0, Util.TAU); c.fill(); }
+    c.fillStyle = this.enemyCol || '#ff5c7a';
+    for (const e of Enemies.pool.active){ if (!e.alive) continue;
+      c.beginPath(); c.arc(X(e.x), Y(e.z), 2, 0, Util.TAU); c.fill(); }
+    c.fillStyle = '#5dff9b';
+    for (const w of Wingmen.list){
+      c.beginPath(); c.arc(X(w.x), Y(w.z), 2, 0, Util.TAU); c.fill(); }
+    if (Boss.active){ c.fillStyle = '#ff3d7f';
+      c.beginPath(); c.arc(X(Boss.x), Y(Boss.z), 5, 0, Util.TAU); c.fill(); }
+    c.fillStyle = '#38f0ff';
+    c.beginPath(); c.arc(X(Player.x), Y(Player.z), 3, 0, Util.TAU); c.fill();
+  },
+};
+
+/* ==================== p4_player.js ==================== */
+
+/* ============================ Player 玩家 ============================ */
+const Player = {
+  x: 0, z: 0, vx: 0, vz: 0, yaw: 0,
+  hp: 100, maxHp: 100,
+  inv: 0,                       // 无敌帧
+  dashT: 0, dashCd: 0, dashDX: 0, dashDZ: 0,
+  group: null, shipG: null, thr: null, glow: null, shield: null,
+  phaseMesh: null, phaseHp: 0, phaseMax: 0, phaseT: 0,   // 相位护盾（C②）：吸收伤害的力场
+  cfg: null, bob: 0,
+
+  init(){
+    this.cfg = SHIPS[Game.shipIdx || 0];
+    this.group = new THREE.Group();
+    this._buildShip();
+
+    this.thr = Gfx.thruster(this.cfg.color, 0.20, -0.85, { opacity: 0.34, core: 0.55 });
+    this.thr.position.y = 0.95;
+    this.group.add(this.thr);
+
+    this.glow = Gfx.glow(this.cfg.color, 1.8, 0.28);
+    this.group.add(this.glow);
+
+    // 受击/无敌时的护盾球
+    this.shield = new THREE.Mesh(
+      new THREE.SphereGeometry(2.2, 16, 12),
+      new THREE.MeshBasicMaterial({ color: this.cfg.color, transparent: true, opacity: 0,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+    this.shield.position.y = 1.0;
+    this.group.add(this.shield);
+
+    // 相位护盾力场（C②）：吸收伤害的青色球壳，由相位护盾武器充能
+    this.phaseMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(2.6, 16, 12),
+      new THREE.MeshBasicMaterial({ color: 0x38f0ff, transparent: true, opacity: 0,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+    this.phaseMesh.position.y = 1.0;
+    this.group.add(this.phaseMesh);
+
+    World.scene.add(this.group);
+  },
+
+  /** 按当前 cfg 重建机身（换机型时调用）*/
+  _buildShip(){
+    if (this.shipG) this.group.remove(this.shipG);
+    const built = Gfx.ship(this.cfg.model, this.cfg.color, 1.0);
+    this.shipG = built.g; this.mats = built.mats;
+    this.shipG.position.y = 0.95;
+    this.group.add(this.shipG);
+  },
+
+  /** 切换机型（菜单选择后、开局前调用）*/
+  setShip(idx){
+    this.cfg = SHIPS[idx] || SHIPS[0];
+    this._buildShip();
+    if (this.thr)    this.thr.userData.cone.material.color.setHex(this.cfg.color);
+    if (this.glow)   this.glow.material.color.setHex(this.cfg.color);
+    if (this.shield) this.shield.material.color.setHex(this.cfg.color);
+  },
+
+  reset(){
+    this.x = 0; this.z = 0; this.vx = 0; this.vz = 0; this.yaw = 0;
+    this.maxHp = this.cfg.hp; this.hp = this.maxHp;
+    this.inv = 0; this.dashT = 0; this.dashCd = 0; this.bob = 0;
+    this.group.visible = true;
+    this.group.position.set(0, 0, 0);
+    this.shipG.rotation.y = 0;
+    this.shield.material.opacity = 0;
+    this.phaseHp = 0; this.phaseMax = 0; this.phaseT = 0;
+    this.phaseMesh.material.opacity = 0;
+    this.poisonT = 0; this.poisonDps = 0;
+  },
+
+  get speed(){ return this.cfg.spd * (1 + Progress.p('speed') * 0.09) * (1 - Synergy.mods.moveSlow); },
+  get fireMul(){ return this.cfg.fire || 1; },
+  get armor(){ return Progress.p('armor') * 0.06 + Synergy.mods.armor; },      // 被动护盾 + 重装共鸣
+  get pickR(){ return CFG.pickRadius * (1 + Progress.p('pick') * 0.34); },
+
+  update(dt){
+    if (this.poisonT > 0 && (typeof Game === 'undefined' || Game.state === 'PLAYING')){
+      this.poisonT -= dt;
+      this.hp -= this.poisonDps * dt;
+      if (this.hp <= 0){ this.hp = 0; Game.over(false); return; }
+    }
+    /* --- 冲刺 --- */
+    if (this.dashCd > 0) this.dashCd -= dt;
+    if (Input.consumeDash() && this.dashCd <= 0 && (Input.ax || Input.az)){
+      this.dashT = CFG.player.dashTime;
+      this.dashCd = CFG.player.dashCd;
+      this.dashDX = Input.ax; this.dashDZ = Input.az;
+      this.inv = Math.max(this.inv, CFG.player.dashTime + 0.12);
+      Audio2.dash();
+      FX.ring(this.x, this.z, this.cfg.color, 5, 0.3);
+    }
+
+    if (this.dashT > 0){
+      this.dashT -= dt;
+      this.vx = this.dashDX * CFG.player.dashSpd;
+      this.vz = this.dashDZ * CFG.player.dashSpd;
+      // 残影
+      if (Math.random() < 0.7)
+        FX.particle(this.x, 0.9, this.z, 0x38f0ff,
+          { life: 0.3, s0: 0.6, s1: 0, drag: 6 });
+    } else {
+      const spd = this.speed;
+      const tx = Input.ax * spd, tz = Input.az * spd;
+      const acc = (Input.ax || Input.az) ? CFG.player.accel : CFG.player.drag;
+      const k = 1 - Math.exp(-acc * dt);
+      this.vx += (tx - this.vx) * k;
+      this.vz += (tz - this.vz) * k;
+    }
+
+    this.x += this.vx * dt;
+    this.z += this.vz * dt;
+    if (Util.clampArena(this, CFG.player.radius)){ this.vx *= 0.4; this.vz *= 0.4; }
+
+    /* --- 朝向：优先朝向索敌目标，否则朝移动方向 --- */
+    const tgt = Weapons.currentTarget;
+    let want = this.yaw;
+    if (tgt && tgt.alive) want = Math.atan2(tgt.x - this.x, tgt.z - this.z);
+    else if (Math.hypot(this.vx, this.vz) > 1.2) want = Math.atan2(this.vx, this.vz);
+    this.yaw = Util.angLerp(this.yaw, want, 1 - Math.pow(0.0006, dt));
+
+    /* --- 表现 --- */
+    this.bob += dt;
+    this.group.position.set(this.x, 0, this.z);
+    this.shipG.rotation.y = this.yaw;
+    this.shipG.position.y = 0.95 + Math.sin(this.bob * 2.4) * 0.07;
+    // 转向侧倾
+    const spdN = Math.hypot(this.vx, this.vz) / Math.max(1, this.speed);
+    const lat = (this.vx * Math.cos(this.yaw) - this.vz * Math.sin(this.yaw)) / Math.max(1, this.speed);
+    this.shipG.rotation.z = Util.lerp(this.shipG.rotation.z, -lat * 0.5, 1 - Math.exp(-9 * dt));
+    this.shipG.rotation.x = Util.lerp(this.shipG.rotation.x, -spdN * 0.12, 1 - Math.exp(-9 * dt));
+
+    this.thr.rotation.y = this.yaw;
+    const tk = 0.55 + spdN * 0.85 + (this.dashT > 0 ? 1.1 : 0);
+    this.thr.scale.set(0.8 + spdN * 0.3, 0.8 + spdN * 0.3, tk);
+    this.thr.userData.cone.material.opacity = 0.45 + spdN * 0.4;
+
+    // 引擎尾迹（建模精细化：移动时拖一缕同色光尘）
+    if (spdN > 0.15 && Math.random() < 0.6)
+      FX.particle(this.x - Math.sin(this.yaw) * 1.2, 0.7, this.z - Math.cos(this.yaw) * 1.2,
+        this.cfg.color, { life: 0.32, s0: 0.4, s1: 0, drag: 4 });
+
+    if (this.inv > 0){
+      this.inv -= dt;
+      const f = Math.abs(Math.sin(this.bob * 26));
+      this.shield.material.opacity = 0.12 + f * 0.2;
+      this.shield.scale.setScalar(1 + f * 0.06);
+    } else if (this.shield.material.opacity > 0){
+      this.shield.material.opacity = Math.max(0, this.shield.material.opacity - dt * 1.6);
+    }
+
+    // 相位护盾力场视觉（计时由相位护盾武器在 Weapons.update 内维护）
+    if (this.phaseT > 0){
+      this.phaseMesh.material.opacity = 0.12 + 0.24 * (this.phaseHp / Math.max(1, this.phaseMax));
+      this.phaseMesh.scale.setScalar(1 + Math.sin(this.bob * 4) * 0.04);
+    } else if (this.phaseMesh.material.opacity > 0){
+      this.phaseMesh.material.opacity = Math.max(0, this.phaseMesh.material.opacity - dt * 1.5);
+    }
+
+    this.glow.material.opacity = 0.22 + Math.sin(this.bob * 3) * 0.06;
+  },
+
+  heal(n){
+    const b = this.hp;
+    this.hp = Math.min(this.maxHp, this.hp + n * Synergy.mods.heal);   // 医疗共鸣（全局治疗乘算）
+    if (this.hp > b){
+      FX.dmgText(this.x, this.z, this.hp - b, false, '#5dff9b');
+      FX.ring(this.x, this.z, 0x5dff9b, 6, 0.45);
+    }
+  },
+
+  takeDamage(n){
+    if (Game.state !== 'PLAYING' || this.inv > 0) return;
+    // 相位护盾（C②）：先于护甲吸收，吸满则免疫该次伤害
+    if (this.phaseHp > 0){
+      const a = Math.min(this.phaseHp, n);
+      this.phaseHp -= a; n -= a;
+      FX.ring(this.x, this.z, 0x38f0ff, 2.6, 0.2);
+      if (this.phaseHp <= 0) this.phaseT = 0;
+      if (n <= 0){ Audio2.hit(); return; }
+    }
+    const dmg = Math.max(1, n * (1 - Math.min(0.7, this.armor)));
+    this.hp -= dmg;
+    this.inv = CFG.player.invAfterHit;
+    Audio2.hurt();
+    World.shake(1.5, 0.3);
+    FX.burst(this.x, this.z, 0xff3d7f, 12, 8, 1);
+    FX.dmgText(this.x, this.z, dmg, false, '#ff6b95');
+    HUD.flashHit();
+    if (this.hp <= 0){ this.hp = 0; Game.over(false); }
+  },
+
+  // 腐蚀变异接触时调用：叠加中毒（持续掉血，走更新 tick 的死亡路径）
+  applyPoison(dps, dur){
+    this.poisonDps = Math.max(this.poisonDps, dps);
+    this.poisonT = Math.max(this.poisonT, dur);
+    FX.ring(this.x, this.z, 0x8dff5a, 2.4, 0.25);
+  },
+};
+
+/* ============================ Bullets 弹药 ============================ */
+/* 玩家弹 / 敌弹用 InstancedMesh（同构、量大，各 1 draw call）；导弹数量少且需
+ * 独立朝向与尾焰，保留普通 Mesh 池。纯数据池不含 mesh，渲染靠 _flush 统一写矩阵。*/
+const Bullets = {
+  pInst: null, eInst: null, group: null,
+  pPool: null, ePool: null, mPool: null,
+  _m: new THREE.Matrix4(), _q: new THREE.Quaternion(), _e: new THREE.Euler(),
+  _p: new THREE.Vector3(), _s: new THREE.Vector3(), _c: new THREE.Color(),
+
+  init(){
+    this.group = new THREE.Group();
+    World.scene.add(this.group);
+
+    // 玩家子弹：细长棱柱，InstancedMesh
+    const pg = new THREE.CylinderGeometry(0.11, 0.11, 1.5, 6);
+    pg.rotateX(Math.PI / 2);
+    const pMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true,
+      opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
+    this.pInst = new THREE.InstancedMesh(pg, pMat, 420);
+    this.pInst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.pInst.frustumCulled = false; this.pInst.renderOrder = 8; this.pInst.count = 0;
+    World.scene.add(this.pInst);
+
+    // 敌弹：小球，InstancedMesh
+    const eg = new THREE.SphereGeometry(0.3, 8, 6);
+    const eMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true,
+      opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
+    this.eInst = new THREE.InstancedMesh(eg, eMat, 300);
+    this.eInst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.eInst.frustumCulled = false; this.eInst.renderOrder = 8; this.eInst.count = 0;
+    World.scene.add(this.eInst);
+
+    // 纯数据池（无 mesh，渲染交给 InstancedMesh 统一写矩阵）
+    this.pPool = Pool.create(420, () => ({ x:0, z:0, y:1, vx:0, vz:0, dmg:0, life:0,
+      max:2, pierce:0, r:0.4, crit:false, target:null, turn:0, splash:0, hitSet:null,
+      frost:false, color:0x9df6ff, long:1, sc:1 }));
+    this.ePool = Pool.create(300, () => ({ x:0, z:0, y:0.9, vx:0, vz:0, dmg:0, life:0,
+      max:4.5, r:0.42, pierce:0, color:0xff5c7a, sc:1 }));
+
+    // 导弹：数量少、需独立朝向与尾焰，保留普通 Mesh 池
+    const mg = new THREE.ConeGeometry(0.2, 0.9, 6); mg.rotateX(Math.PI / 2);
+    this.mPool = Pool.create(120, () => {
+      const m = new THREE.Mesh(mg, new THREE.MeshBasicMaterial({ color: 0xffcc33,
+        transparent: true, opacity: 1, blending: THREE.AdditiveBlending, depthWrite: false }));
+      m.visible = false; this.group.add(m);
+      return { mesh: m, x:0, z:0, y:1.1, vx:0, vz:0, dmg:0, life:0, max:3.2,
+        target:null, turn:6.2, splash:3.6, r:0.55, crit:false, pierce:0, color:0xffcc33, sc:1 };
+    });
+  },
+
+  /** 玩家直线弹 */
+  fire(x, z, dir, spd, dmg, opt){
+    const o = this.pPool.get(); if (!o) return null;
+    const q = opt || {};
+    o.x = x; o.z = z; o.y = q.y || 1.0;
+    o.vx = Math.sin(dir) * spd; o.vz = Math.cos(dir) * spd;
+    o.dmg = dmg; o.life = 0; o.max = q.life || 1.5;
+    o.pierce = q.pierce || 0; o.r = q.r || 0.45;
+    o.crit = !!q.crit; o.splash = q.splash || 0;
+    if (!o.hitSet) o.hitSet = new Set(); else o.hitSet.clear();
+    o.sc = q.scale || 1; o.long = q.long || 1;
+    o.frost = !!q.frost;
+    o.color = q.color || (q.crit ? 0xffcc33 : 0x9df6ff);
+    return o;
+  },
+
+  /** 追踪导弹 */
+  missile(x, z, dmg, target, opt){
+    const o = this.mPool.get(); if (!o) return null;
+    const q = opt || {};
+    o.x = x; o.z = z; o.y = 1.1;
+    const a = q.dir != null ? q.dir : Math.random() * Util.TAU;
+    const sp = q.spd || 15;
+    o.vx = Math.sin(a) * sp; o.vz = Math.cos(a) * sp;
+    o.dmg = dmg; o.life = 0; o.max = 3.2;
+    o.target = target; o.turn = q.turn || 6.2;
+    o.splash = q.splash || 3.6; o.r = 0.55;
+    o.crit = !!q.crit; o.pierce = 0;
+    o.sc = q.scale || 1; o.color = q.color || 0xffcc33;
+    o.mesh.scale.setScalar(o.sc);
+    o.mesh.material.color.setHex(o.color);
+    o.mesh.position.set(o.x, o.y, o.z);
+    o.mesh.visible = true;
+    return o;
+  },
+
+  /** 敌方子弹 */
+  enemyFire(x, z, dir, spd, dmg, opt){
+    const o = this.ePool.get(); if (!o) return null;
+    const q = opt || {};
+    o.x = x; o.z = z; o.y = q.y || 0.9;
+    o.vx = Math.sin(dir) * spd; o.vz = Math.cos(dir) * spd;
+    o.dmg = dmg; o.life = 0; o.max = q.life || 4.5;
+    o.r = q.r || 0.42; o.pierce = 0;
+    o.sc = q.scale || 1; o.color = q.color || 0xff5c7a;
+    return o;
+  },
+
+  update(dt){
+    /* ---- 玩家直线弹 ---- */
+    this.pPool.each(b => {
+      b.life += dt;
+      if (b.life >= b.max) return true;
+      b.x += b.vx * dt; b.z += b.vz * dt;
+      if (Math.hypot(b.x, b.z) > CFG.arena + 12) return true;
+      if (Math.random() < 0.9)
+        FX.particle(b.x, b.y, b.z, b.color, { life: 0.22, s0: b.r * 0.85, s1: 0, drag: 4 });
+      if (Asteroids.hitTest(b.x, b.z, b.r)){ FX.burst(b.x, b.z, 0x9fb0c0, 3, 3, b.y); return true; }
+      const hits = Enemies.queryHit(b.x, b.z, b.r);
+      for (const e of hits){
+        if (b.hitSet.has(e._pi)) continue;
+        b.hitSet.add(e._pi);
+        if (b.frost){ e.frostLv = Math.min(3, (e.frostLv || 0) + 1); e.frostT = 0.5; }
+        Enemies.damage(e, b.dmg, b.crit, b.x, b.z);
+        if (b.splash > 0) Enemies.splash(b.x, b.z, b.splash, b.dmg * 0.55, false);
+        if (b.pierce-- <= 0){ FX.hitSpark(b.x, b.z, b.color, b.y); return true; }
+      }
+      if (Boss.active && Boss.hitTest(b.x, b.z, b.r)){
+        Boss.damage(b.dmg, b.crit, b.x, b.z);
+        if (b.pierce-- <= 0) return true;
+      }
+      return false;
+    });
+
+    /* ---- 导弹 ---- */
+    this.mPool.each(b => {
+      b.life += dt;
+      if (b.life >= b.max){ this._boom(b); return true; }
+      if (!b.target || !b.target.alive) b.target = Weapons.nearestTo(b.x, b.z, 999);
+      if (b.target){
+        const ta = Math.atan2(b.target.x - b.x, b.target.z - b.z);
+        const ca = Math.atan2(b.vx, b.vz);
+        const na = Util.angLerp(ca, ta, Math.min(1, b.turn * dt));
+        const sp = Math.hypot(b.vx, b.vz) + 26 * dt;
+        b.vx = Math.sin(na) * sp; b.vz = Math.cos(na) * sp;
+      }
+      b.x += b.vx * dt; b.z += b.vz * dt;
+      b.mesh.position.set(b.x, b.y, b.z);
+      b.mesh.rotation.y = Math.atan2(b.vx, b.vz);
+      if (Math.random() < 0.9)
+        FX.particle(b.x, b.y, b.z, 0xffb24a, { life: 0.34, s0: 0.48, drag: 4 });
+      if (Asteroids.hitTest(b.x, b.z, b.r)){ this._boom(b); return true; }
+      const hits = Enemies.queryHit(b.x, b.z, b.r);
+      if (hits.length){ this._boom(b); return true; }
+      if (Boss.active && Boss.hitTest(b.x, b.z, b.r)){ this._boom(b); return true; }
+      return false;
+    });
+
+    /* ---- 敌弹 ---- */
+    this.ePool.each(b => {
+      b.life += dt;
+      if (b.life >= b.max) return true;
+      b.x += b.vx * dt; b.z += b.vz * dt;
+      if (Math.hypot(b.x, b.z) > CFG.arena + 10) return true;
+      if (Math.random() < 0.85)
+        FX.particle(b.x, b.y, b.z, b.color, { life: 0.2, s0: b.r * 0.75, s1: 0, drag: 3.5 });
+      if (Util.dist2(b.x, b.z, Player.x, Player.z) < (b.r + CFG.player.radius) ** 2){
+        Player.takeDamage(b.dmg);
+        FX.hitSpark(b.x, b.z, 0xff5c7a, b.y);
+        return true;
+      }
+      const w = Wingmen.intercept(b.x, b.z, b.r);
+      if (w){ FX.burst(b.x, b.z, 0x5dff9b, 6, 5, b.y); return true; }
+      return false;
+    });
+
+    // 统一把活跃数据写入 InstancedMesh 矩阵（逐帧重写，关自动更新）
+    this._flush(this.pInst, this.pPool, true);
+    this._flush(this.eInst, this.ePool, false);
+  },
+
+  _flush(inst, pool, isPlayer){
+    const list = pool.active, n = list.length;
+    for (let i = 0; i < n; i++){
+      const b = list[i];
+      this._p.set(b.x, b.y, b.z);
+      let yaw = 0, sx, sy, sz;
+      if (isPlayer){ yaw = Math.atan2(b.vx, b.vz); sx = b.sc; sy = b.sc; sz = b.sc * (b.long || 1); }
+      else { sx = b.sc; sy = b.sc; sz = b.sc; }
+      this._q.setFromEuler(this._e.set(0, yaw, 0));
+      this._s.set(sx, sy, sz);
+      this._m.compose(this._p, this._q, this._s);
+      inst.setMatrixAt(i, this._m);
+      this._c.setHex(b.color); inst.setColorAt(i, this._c);
+    }
+    inst.count = n;
+    if (n > 0){ inst.instanceMatrix.needsUpdate = true; if (inst.instanceColor) inst.instanceColor.needsUpdate = true; }
+  },
+
+  _boom(b){
+    b.mesh.visible = false;
+    FX.explode(b.x, b.z, 0xff9a3d, 0.85);
+    Audio2.hit();
+    World.shake(0.35, 0.14);
+    Enemies.splash(b.x, b.z, b.splash, b.dmg, b.crit);
+    if (Boss.active && Boss.hitTest(b.x, b.z, b.splash)) Boss.damage(b.dmg, b.crit, b.x, b.z);
+  },
+
+  reset(){
+    this.pPool.releaseAll(); this.ePool.releaseAll(); this.mPool.releaseAll();
+    this.pInst.count = 0; this.eInst.count = 0;
+  },
+};
+
+/* ==================== p5_weapons.js ==================== */
+
+/* ============================ Weapons 武器系统 ============================ */
+/* 全自动：玩家只负责走位，武器自己找目标开火（幸存者类核心手感）。*/
+const Weapons = {
+  currentTarget: null,
+  cd: { cannon: 0, missile: 0, laser: 0, aura: 0, spread: 0, chain: 0, drone: 0, nova: 0, saw: 0, rail: 0, flame: 0, pulse: 0, frost: 0, meteor: 0, swarm: 0, storm: 0,
+        blackhole: 0, phase: 0, photon: 0, tractor: 0, rotor: 0, mine: 0, nano: 0 },
+    beams: [], auraMesh: null, auraT: 0,
+  drones: [], droneGroup: null, droneT: 0,
+  meteors: [],
+
+  /* ---- 数值表：index = 等级-1，让每一级的提升都肉眼可见 ---- */
+  TABLE: {
+    cannon: [
+      { n:1, dmg:12, cd:0.42, pierce:0, spread:0.00 },
+      { n:2, dmg:14, cd:0.40, pierce:0, spread:0.00 },
+      { n:3, dmg:16, cd:0.36, pierce:0, spread:0.17 },
+      { n:3, dmg:21, cd:0.32, pierce:1, spread:0.20 },
+      { n:5, dmg:26, cd:0.27, pierce:2, spread:0.26 },
+    ],
+    missile: [
+      { n:1, dmg:26, cd:1.90, splash:3.2 },
+      { n:1, dmg:34, cd:1.45, splash:3.7 },
+      { n:2, dmg:38, cd:1.30, splash:4.2 },
+      { n:3, dmg:44, cd:1.10, splash:4.7 },
+      { n:4, dmg:54, cd:0.92, splash:5.4 },
+    ],
+    laser: [
+      { n:1, dmg:20, cd:1.10, w:0.30 },
+      { n:1, dmg:28, cd:0.92, w:0.38 },
+      { n:2, dmg:32, cd:0.80, w:0.46 },
+      { n:2, dmg:40, cd:0.66, w:0.56 },
+      { n:3, dmg:48, cd:0.55, w:0.70 },
+    ],
+    aura: [
+      { r:4.6, dmg:8,  cd:0.62, slow:0.10 },
+      { r:5.6, dmg:12, cd:0.55, slow:0.14 },
+      { r:6.6, dmg:16, cd:0.48, slow:0.19 },
+      { r:7.8, dmg:21, cd:0.41, slow:0.24 },
+      { r:9.2, dmg:27, cd:0.34, slow:0.30 },
+    ],
+    /* 散射霰弹：近距扇形覆盖，清杂兵神器 */
+    spread: [
+      { n:5, dmg:9,  cd:0.52, arc:0.95 },
+      { n:6, dmg:11, cd:0.48, arc:1.05 },
+      { n:7, dmg:13, cd:0.44, arc:1.15 },
+      { n:8, dmg:15, cd:0.40, arc:1.28 },
+      { n:9, dmg:18, cd:0.36, arc:1.40 },
+    ],
+    /* 环绕光刃：环绕自身的旋转斩击，持续近身输出 */
+    orbit: [
+      { n:2, dmg:14, cd:0.5, r:3.4, spin:2.2 },
+      { n:3, dmg:18, cd:0.46, r:3.8, spin:2.4 },
+      { n:3, dmg:22, cd:0.42, r:4.2, spin:2.6 },
+      { n:4, dmg:26, cd:0.38, r:4.6, spin:2.8 },
+      { n:5, dmg:30, cd:0.34, r:5.0, spin:3.0 },
+    ],
+    /* 连锁闪电：在敌人之间弹跳的电弧（VS 经典） */
+    chain: [
+      { bounces:2, dmg:14, cd:1.40, range:14 },
+      { bounces:3, dmg:18, cd:1.25, range:16 },
+      { bounces:4, dmg:22, cd:1.10, range:18 },
+      { bounces:5, dmg:28, cd:0.95, range:20 },
+      { bounces:6, dmg:34, cd:0.82, range:22 },
+    ],
+    /* 无人僚机：召唤若干无人机环绕玩家自动开火 */
+    drone: [
+      { n:1, dmg:9,  cd:1.40, r:5.0 },
+      { n:2, dmg:11, cd:1.25, r:5.4 },
+      { n:3, dmg:13, cd:1.10, r:5.8 },
+      { n:4, dmg:16, cd:0.95, r:6.2 },
+      { n:5, dmg:20, cd:0.80, r:6.6 },
+    ],
+    /* 湮灭新星：周期性以自身为中心爆发冲击波，清场型 AoE（区别于持久力场/定点链电） */
+    nova: [
+      { r:6.0,  dmg:18, cd:2.4 },
+      { r:7.0,  dmg:24, cd:2.2 },
+      { r:8.0,  dmg:30, cd:2.0 },
+      { r:9.5,  dmg:38, cd:1.8 },
+      { r:11.0, dmg:48, cd:1.6 },
+    ],
+    /* 回旋飞锯：掷出旋转刃沿瞄准方向飞出，穿透一切后回旋归位（复用真 3D 光刃模型） */
+    saw: [
+      { n:1, dmg:16, cd:1.10, spd:18, out:0.9  },
+      { n:1, dmg:20, cd:1.00, spd:20, out:0.95 },
+      { n:2, dmg:24, cd:0.95, spd:21, out:1.0  },
+      { n:2, dmg:28, cd:0.85, spd:23, out:1.05 },
+      { n:3, dmg:34, cd:0.78, spd:25, out:1.10 },
+    ],
+    /* 电磁轨道炮：蓄能后射出贯穿重炮，一发撕穿全场（区别于连射主炮 / 多目标激光） */
+    rail: [
+      { dmg:40,  cd:1.90, spd:90,  pierce:999 },
+      { dmg:52,  cd:1.70, spd:95,  pierce:999 },
+      { dmg:66,  cd:1.50, spd:100, pierce:999 },
+      { dmg:82,  cd:1.30, spd:108, pierce:999 },
+      { dmg:100, cd:1.10, spd:116, pierce:999 },
+    ],
+    /* 烈焰喷射：朝索敌方向喷出一束扇形火焰，持续灼烧锥内敌人 */
+    flame: [
+      { dmg:7,  cd:0.30, range:9,  arc:0.60 },
+      { dmg:9,  cd:0.28, range:10, arc:0.70 },
+      { dmg:11, cd:0.26, range:11, arc:0.80 },
+      { dmg:13, cd:0.24, range:12, arc:0.90 },
+      { dmg:16, cd:0.22, range:13, arc:1.00 },
+    ],
+    /* 声波脉冲：以自身为中心扩散的冲击环，像涟漪般横扫近身敌群 */
+    pulse: [
+      { dmg:14, cd:1.6, r:7  },
+      { dmg:18, cd:1.5, r:8  },
+      { dmg:23, cd:1.4, r:9  },
+      { dmg:29, cd:1.3, r:10 },
+      { dmg:36, cd:1.2, r:11 },
+    ],
+
+    /* 冷冻射线：命中叠霜层，冻结期受伤 ×1.5（C① 新增，tag=energy） */
+    frost: [
+      { n:1, dmg:9,  cd:0.30, pierce:0 },
+      { n:2, dmg:11, cd:0.27, pierce:0 },
+      { n:3, dmg:13, cd:0.24, pierce:1 },
+      { n:4, dmg:16, cd:0.21, pierce:1 },
+      { n:5, dmg:19, cd:0.18, pierce:2 },
+    ],
+    /* 轨道打击：锁定敌群密集区，1s 警示后残骸坠落 AoE（C① 新增，tag=heavy） */
+    meteor: [
+      { n:1, dmg:40,  cd:3.2, r:5.0 },
+      { n:1, dmg:54,  cd:2.9, r:5.6 },
+      { n:2, dmg:68,  cd:2.6, r:6.4 },
+      { n:3, dmg:84,  cd:2.3, r:7.2 },
+      { n:4, dmg:104, cd:2.0, r:8.0 },
+    ],
+    /* 蜂群导弹：微型追踪弹齐射，复用导弹系统（C① 新增，tag=barrage） */
+    swarm: [
+      { n:6,  dmg:10, cd:2.6, splash:2.6 },
+      { n:8,  dmg:12, cd:2.3, splash:2.9 },
+      { n:10, dmg:14, cd:2.0, splash:3.2 },
+      { n:12, dmg:17, cd:1.7, splash:3.6 },
+      { n:14, dmg:20, cd:1.4, splash:4.0 },
+    ],
+    /* 离子风暴：密集区随机雷击，复用链电视觉（C① 新增，tag=energy） */
+    storm: [
+      { strikes:2, dmg:16, cd:1.6, range:16 },
+      { strikes:3, dmg:20, cd:1.4, range:18 },
+      { strikes:4, dmg:25, cd:1.2, range:20 },
+      { strikes:5, dmg:30, cd:1.0, range:22 },
+      { strikes:6, dmg:36, cd:0.85, range:24 },
+    ],
+
+    /* 黑洞：在敌群处生成引力井，吸附并持续灼烧，到期坍缩爆发（C② 新增，tag=energy） */
+    blackhole: [
+      { life:3.0, r:5.0, dps:18, pull:8 },
+      { life:3.5, r:6.0, dps:24, pull:10 },
+      { life:4.0, r:7.0, dps:30, pull:12 },
+      { life:4.2, r:7.6, dps:36, pull:14 },
+      { life:4.5, r:8.2, dps:44, pull:16 },
+    ],
+    /* 相位护盾：周期展开吸收伤害的相位力场（C② 新增，tag=medical） */
+    phase: [
+      { hp:30, dur:3.0, cd:7.0 },
+      { hp:45, dur:3.5, cd:6.5 },
+      { hp:65, dur:4.0, cd:6.0 },
+      { hp:90, dur:4.5, cd:5.5 },
+      { hp:120, dur:5.0, cd:5.0 },
+    ],
+    /* 光子跳弹：命中后弹射至最近其他敌人的贯穿光弹（C② 新增，tag=precise） */
+    photon: [
+      { n:2, dmg:12, cd:1.0, bounce:2 },
+      { n:3, dmg:15, cd:0.9, bounce:3 },
+      { n:3, dmg:19, cd:0.8, bounce:4 },
+      { n:4, dmg:23, cd:0.72, bounce:5 },
+      { n:5, dmg:28, cd:0.65, bounce:6 },
+    ],
+    /* 牵引光束：以自身为中心的持续引力场，聚敌并灼烧（C② 新增，tag=heavy） */
+    tractor: [
+      { r:7, pull:6, dps:4 },
+      { r:8, pull:8, dps:6 },
+      { r:9, pull:10, dps:8 },
+      { r:10, pull:12, dps:11 },
+      { r:12, pull:15, dps:14 },
+    ],
+    /* 旋转相阵：环绕自身的相位节点，接触持续杀伤（C② 新增，tag=barrage） */
+    rotor: [
+      { n:2, dmg:10, r:3.0, spin:2.4 },
+      { n:3, dmg:13, r:3.4, spin:2.6 },
+      { n:4, dmg:16, r:3.8, spin:2.8 },
+      { n:5, dmg:20, r:4.2, spin:3.0 },
+      { n:6, dmg:25, r:4.6, spin:3.2 },
+    ],
+    /* 太空雷阵：在周围布设地雷，敌近即爆（C② 新增，tag=barrage） */
+    mine: [
+      { n:3, dmg:30, cd:2.0, r:4.0 },
+      { n:4, dmg:40, cd:1.8, r:4.6 },
+      { n:5, dmg:52, cd:1.6, r:5.2 },
+      { n:6, dmg:66, cd:1.4, r:5.8 },
+      { n:8, dmg:84, cd:1.2, r:6.4 },
+    ],
+    /* 纳米修复：周期治疗，恢复结构强度（C② 新增，tag=medical） */
+    nano: [
+      { hp:14, cd:3.0 },
+      { hp:20, cd:2.7 },
+      { hp:28, cd:2.4 },
+      { hp:38, cd:2.1 },
+      { hp:50, cd:1.8 },
+    ],
+  },
+
+  init(){
+    this.beamGroup = new THREE.Group();
+    World.scene.add(this.beamGroup);
+
+    // 力场光环（贴地 + 竖直柱面双层）
+    const g = new THREE.Group();
+    const disc = new THREE.Mesh(new THREE.RingGeometry(0.72, 1, 48),
+      new THREE.MeshBasicMaterial({ color: 0xb980ff, transparent: true, opacity: 0.34,
+        side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false }));
+    disc.rotation.x = -Math.PI / 2; disc.position.y = 0.1;
+    const cyl = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 1.5, 40, 1, true),
+      new THREE.MeshBasicMaterial({ color: 0x8f5cff, transparent: true, opacity: 0.12,
+        side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false }));
+    cyl.position.y = 0.75;
+    g.add(disc, cyl);
+    g.visible = false;
+    this.auraMesh = g; this.auraDisc = disc; this.auraCyl = cyl;
+    World.scene.add(g);
+
+    // 激光束池：外鞘(青/半透) + 内芯(白/亮) 双层圆柱，呈现"相位激光"发光质感
+    const bg = new THREE.CylinderGeometry(1, 1, 1, 8, 1, true);
+    bg.rotateX(Math.PI / 2);           // 沿 +Z
+    bg.translate(0, 0, 0.5);           // 原点在起点
+    const bgCore = new THREE.CylinderGeometry(0.42, 0.42, 1, 8, 1, true);
+    bgCore.rotateX(Math.PI / 2); bgCore.translate(0, 0, 0.5);
+    for (let i = 0; i < 8; i++){
+      const outer = new THREE.Mesh(bg, new THREE.MeshBasicMaterial({
+        color: 0x9df6ff, transparent: true, opacity: 0,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+      const core = new THREE.Mesh(bgCore, new THREE.MeshBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: 0,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false }));
+      const grp = new THREE.Group(); grp.add(outer, core); grp.visible = false;
+      this.beamGroup.add(grp);
+      this.beams.push({ mesh: grp, outer, core, life: 0 });
+    }
+
+    // 链式闪电折电池（固定 11 点 Line，渲染时实时抖动成锯齿电光）
+    this.boltGroup = new THREE.Group();
+    World.scene.add(this.boltGroup);
+    this.bolts = [];
+    for (let i = 0; i < 8; i++){
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(11 * 3), 3));
+      const line = new THREE.Line(geo, new THREE.LineBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: 0,
+        blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+      line.visible = false; line.frustumCulled = false;
+      this.boltGroup.add(line);
+      this.bolts.push({ line, life: 0 });
+    }
+
+    // 环绕光刃（最多 5 柄，按等级显隐）：真 3D 双刃模型 + 切割拖尾残影
+    this.bladeGroup = new THREE.Group();
+    World.scene.add(this.bladeGroup);
+    this.blades = [];
+    for (let i = 0; i < 5; i++){
+      const m = Gfx.blade(0x8ff0ff);
+      const tr = Gfx.blade(0x8ff0ff);
+      m.visible = false; tr.visible = false;
+      this.bladeGroup.add(m, tr);
+      this.blades.push({ mesh: m, trail: tr, cd: 0 });
+    }
+    this.orbitT = 0;
+
+    // 无人机（最多 5 架，按等级显隐）：真 3D 侦察无人机，环绕玩家自动攻击
+    this.droneGroup = new THREE.Group();
+    World.scene.add(this.droneGroup);
+    this.drones = [];
+    for (let i = 0; i < 5; i++){
+      const g = Gfx.drone(0xffcc33, 2.0);
+      g.visible = false;
+      this.droneGroup.add(g);
+      this.drones.push({ mesh: g, a: 0, cd: 0, r: 5.0, px: Player.x, pz: Player.z, recoil: 0 });
+    }
+    this.droneT = 0;
+
+    // 回旋飞锯（最多 5 柄，按等级投掷）：真 3D 双刃 + 旋转金色锯盘残影
+    this.sawGroup = new THREE.Group();
+    World.scene.add(this.sawGroup);
+    this.saws = [];
+    for (let i = 0; i < 5; i++){
+      const m = Gfx.blade(0xffd24a);
+      const disc = new THREE.Mesh(new THREE.RingGeometry(0.16, 0.72, 22),
+        new THREE.MeshBasicMaterial({ color: 0xffd24a, transparent: true, opacity: 0,
+          side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+      disc.rotation.x = -Math.PI / 2;
+      m.visible = false; disc.visible = false;
+      this.sawGroup.add(m, disc);
+      this.saws.push({ mesh: m, disc, active: false, x: 0, z: 0, vx: 0, vz: 0,
+        t: 0, life: 0, out: 1, dmg: 0, spin: 0, hits: null, bossHit: false, returning: false });
+    }
+
+    // 新星冲击圈池（纯 FX，无需常驻网格）
+    this.novaT = 0;
+    this.pulses = [];          // 声波脉冲：扩散冲击环（自定义薄壳命中）
+
+    // —— C② 新实体系统 ——
+    this.blackholes = [];                                   // 黑洞引力井
+    this.photonGeo = new THREE.SphereGeometry(0.34, 8, 6);  // 光子跳弹共享几何
+    this.photons = [];
+    this.tractorMesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(1, 1, 1, 28, 1, true),
+      new THREE.MeshBasicMaterial({ color: 0x38f0ff, transparent: true, opacity: 0,
+        side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false }));
+    this.tractorMesh.position.y = 1.0; this.tractorMesh.visible = false;
+    World.scene.add(this.tractorMesh);
+    // 旋转相阵：最多 6 个相位节点
+    this.rotorGroup = new THREE.Group(); World.scene.add(this.rotorGroup);
+    this.rotorNodes = [];
+    for (let i = 0; i < 6; i++){
+      const m = new THREE.Mesh(new THREE.OctahedronGeometry(0.5, 0),
+        new THREE.MeshBasicMaterial({ color: 0xffd95c, transparent: true, opacity: 0.95,
+          blending: THREE.AdditiveBlending, depthWrite: false }));
+      m.visible = false; this.rotorGroup.add(m);
+      this.rotorNodes.push({ mesh: m, cd: 0 });
+    }
+    this.rotorT2 = 0;
+    // 太空雷阵：预建网格池（最多 28 颗）
+    this.mineGeo = new THREE.OctahedronGeometry(0.42, 0);
+    this.minePool = [];
+    for (let i = 0; i < 28; i++){
+      const m = new THREE.Mesh(this.mineGeo, new THREE.MeshBasicMaterial({
+        color: 0xff6b3d, transparent: true, opacity: 0.95,
+        blending: THREE.AdditiveBlending, depthWrite: false }));
+      m.visible = false; World.scene.add(m);
+      this.minePool.push({ mesh: m, alive: false, x:0, z:0, t:0, arm:0, r:0, dmg:0 });
+    }
+  },
+
+  reset(){
+    this.currentTarget = null;
+    for (const k in this.cd) this.cd[k] = 0;
+    this.auraMesh.visible = false;
+    this.auraT = 0;
+    for (const b of this.beams){ b.life = 0; b.mesh.visible = false; }
+    if (this.blades) for (const bl of this.blades){ bl.cd = 0; bl.mesh.visible = false; if (bl.trail) bl.trail.visible = false; }
+    this.orbitT = 0;
+    if (this.drones) for (const d of this.drones){ d.cd = 0; d.mesh.visible = false; }
+    this.droneT = 0;
+    if (this.saws) for (const s of this.saws){ s.active = false; s.mesh.visible = false; if (s.disc) s.disc.visible = false; }
+    if (this.bolts) for (const b of this.bolts){ b.life = 0; b.line.visible = false; }
+    if (this.meteors) for (const m of this.meteors){ if (m.mesh){ World.scene.remove(m.mesh); m.mesh = null; } }
+    this.meteors.length = 0;
+    this.novaT = 0;
+    if (this.pulses) this.pulses.length = 0;
+    // C② 实体池清理
+    if (this.blackholes) for (const h of this.blackholes){ if (h.mesh) World.scene.remove(h.mesh); }
+    if (this.blackholes) this.blackholes.length = 0;
+    if (this.photons) for (const p of this.photons){ if (p.mesh) World.scene.remove(p.mesh); }
+    if (this.photons) this.photons.length = 0;
+    if (this.tractorMesh) this.tractorMesh.visible = false;
+    if (this.rotorNodes) for (const r of this.rotorNodes){ r.cd = 0; r.mesh.visible = false; }
+    if (this.minePool) for (const m of this.minePool){ m.alive = false; m.mesh.visible = false; }
+  },
+
+  /* ---- 索敌：优先 BOSS，其次最近的敌人 ---- */
+  nearestTo(x, z, maxR){
+    let best = null, bd = maxR * maxR;
+    const list = Enemies.pool.active;
+    for (let i = 0; i < list.length; i++){
+      const e = list[i];
+      const d = Util.dist2(x, z, e.x, e.z);
+      if (d < bd){ bd = d; best = e; }
+    }
+    return best;
+  },
+
+  acquire(){
+    if (Boss.active && !Boss.entering){
+      const d = Math.hypot(Boss.x - Player.x, Boss.z - Player.z);
+      if (d < 54){ this.currentTarget = Boss.asTarget(); return; }
+    }
+    const t = this.nearestTo(Player.x, Player.z, 46);
+    this.currentTarget = t;
+  },
+
+  rateMul(){ return 1 / (1 + Progress.p('rate') * 0.09); },
+  rollCrit(){ return Math.random() < Math.min(0.9, Progress.p('crit') * 0.07 + Synergy.mods.crit); },
+  critMul(){ return 2.1 + Progress.p('crit') * 0.05 + Synergy.mods.critDmg; },
+
+  /** 链式闪电：找 (x,z) 附近最近的存活敌人，排除 prev */
+  _chainNext(x, z, range, prev){
+    const list = Enemies.pool.active;
+    let best = null, bd = range * range;
+    for (let i = 0; i < list.length; i++){
+      const e = list[i];
+      if (!e.alive || e === prev) continue;
+      const d = Util.dist2(x, z, e.x, e.z);
+      if (d < bd){ bd = d; best = e; }
+    }
+    return best;
+  },
+
+  /** 链式闪电：用折线电弧画出 p1→p2 的锯齿电光（亮白核心 + 节点电火花） */
+  _chainBeam(p1, p2){
+    const b = this.bolts.find(x => x.life <= 0);
+    if (!b) return;
+    const dx = p2.x - p1.x, dz = p2.z - p1.z;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.001) return;
+    const nx = -dz / len, nz = dx / len;            // 垂直方向（用于抖动）
+    const pos = b.line.geometry.attributes.position.array;
+    const N = 10;
+    for (let i = 0; i <= N; i++){
+      const t = i / N;
+      let ox = 0, oy = 0, oz = 0;
+      if (i > 0 && i < N){
+        const amp = Math.sin(t * Math.PI) * (0.5 + Math.random() * 0.6);
+        const sgn = Math.random() < 0.5 ? -1 : 1;
+        ox = nx * amp * sgn; oz = nz * amp * sgn;
+        oy = Math.sin(t * Math.PI) * (Math.random() - 0.5) * 0.4;
+      }
+      const y1 = (i === 0 && p1.sky) ? 18 : 1.1;
+      pos[i*3]   = p1.x + dx * t + ox;
+      pos[i*3+1] = y1 + oy;
+      pos[i*3+2] = p1.z + dz * t + oz;
+    }
+    b.line.geometry.attributes.position.needsUpdate = true;
+    b.line.visible = true;
+    b.life = 1;
+    FX.burst(p2.x, p2.z, 0x9df6ff, 3, 4, 1.1);      // 节点电火花
+  },
+
+  update(dt){
+    this.acquire();
+    const T = this.currentTarget;
+    const rm = this.rateMul() / (Player.fireMul || 1);
+
+    /* ---------- 主炮 ---------- */
+    const cl = Progress.w('cannon');
+    if (cl > 0){
+      this.cd.cannon -= dt;
+      if (this.cd.cannon <= 0 && T){
+        const S = this.TABLE.cannon[cl - 1];
+        this.cd.cannon = S.cd * rm;
+        const base = Math.atan2(T.x - Player.x, T.z - Player.z);
+        for (let i = 0; i < S.n; i++){
+          const off = (i - (S.n - 1) / 2) * S.spread;
+          const crit = this.rollCrit();
+          const dmg = S.dmg * (crit ? this.critMul() : 1);
+          // 枪口在机头两侧
+          const side = ((i % 2) ? 1 : -1) * 0.55;
+          const px = Player.x + Math.cos(base) * side + Math.sin(base) * 1.2;
+          const pz = Player.z - Math.sin(base) * side + Math.cos(base) * 1.2;
+          Bullets.fire(px, pz, base + off, 62, dmg, {
+            pierce: S.pierce, crit, long: 1.3,
+            color: crit ? 0xffcc33 : 0x9df6ff, life: 1.3 });
+        }
+        const mx = Player.x + Math.sin(base) * 1.5, mz = Player.z + Math.cos(base) * 1.5;
+        FX.ring(mx, mz, 0x9df6ff, 2.2, 0.16);          // 脉冲枪口闪光
+        FX.burst(mx, mz, 0x9df6ff, 5, 3.4, 1.0);
+        Audio2.cannonPulse();
+      }
+    }
+
+    /* ---------- 追踪导弹 ---------- */
+    const ml = Progress.w('missile');
+    if (ml > 0){
+      this.cd.missile -= dt;
+      if (this.cd.missile <= 0 && T){
+        const S = this.TABLE.missile[ml - 1];
+        this.cd.missile = S.cd * rm;
+        for (let i = 0; i < S.n; i++){
+          const crit = this.rollCrit();
+          const a = Player.yaw + Math.PI + (i - (S.n - 1) / 2) * 0.7 + Util.rand(-0.15, 0.15);
+          Bullets.missile(Player.x + Math.sin(a) * 0.8, Player.z + Math.cos(a) * 0.8,
+            S.dmg * (crit ? this.critMul() : 1),
+            (i === 0 ? T : this.nearestTo(Player.x, Player.z, 46)) || T,
+            { dir: a, splash: S.splash, crit, spd: 12, scale: 1 + ml * 0.06 });
+        }
+        FX.ring(Player.x, Player.z, 0xffb24a, 2.6, 0.2);   // 导弹发射闪光
+        Audio2.missile();
+      }
+    }
+
+    /* ---------- 相位激光 ---------- */
+    const ll = Progress.w('laser');
+    if (ll > 0){
+      this.cd.laser -= dt;
+      if (this.cd.laser <= 0 && T){
+        const S = this.TABLE.laser[ll - 1];
+        this.cd.laser = S.cd * rm;
+        // 取最近的 n 个目标各来一发贯穿光束
+        const targets = this.pickTargets(S.n);
+        for (const tg of targets) this.beam(tg, S, ll);
+        Audio2.laser();
+      }
+    }
+
+    /* ---------- 湮灭力场 ---------- */
+    const al = Progress.w('aura');
+    if (al > 0){
+      const S = this.TABLE.aura[al - 1];
+      this.auraMesh.visible = true;
+      this.auraT += dt;
+      const pulse = 1 + Math.sin(this.auraT * 4.2) * 0.035;
+      this.auraMesh.position.set(Player.x, 0, Player.z);
+      this.auraDisc.scale.setScalar(S.r * pulse);
+      this.auraCyl.scale.set(S.r * pulse, 1, S.r * pulse);
+      this.auraDisc.rotation.z += dt * 0.7;
+      this.auraCyl.material.opacity = 0.10 + Math.sin(this.auraT * 8) * 0.06;   // 力场微闪
+      this.cd.aura -= dt;
+      if (this.cd.aura <= 0){
+        this.cd.aura = S.cd * rm;
+        const hits = Enemies.queryHit(Player.x, Player.z, S.r);
+        for (const e of hits){
+          const crit = this.rollCrit();
+          Enemies.damage(e, S.dmg * (crit ? this.critMul() : 1), crit, e.x, e.z);
+          e.slowT = 0.6; e.slowK = S.slow;
+        }
+        if (hits.length){
+          FX.ring(Player.x, Player.z, 0xb980ff, S.r * 1.05, 0.3);
+          // 力场内缘向心电弧，强化"湮灭力场"观感
+          for (let k = 0; k < 7; k++){
+            const a = Math.random() * Util.TAU;
+            FX.particle(Player.x + Math.cos(a) * S.r, 1.0, Player.z + Math.sin(a) * S.r,
+              0xb980ff, { life: 0.3, s0: 0.5, s1: 0.1, drag: 2,
+                vx: -Math.cos(a) * 5, vz: -Math.sin(a) * 5 });
+          }
+        }
+        if (Boss.active && Boss.hitTest(Player.x, Player.z, S.r))
+          Boss.damage(S.dmg * 1.2, false, Boss.x, Boss.z);
+      }
+      // 力场边缘持续电弧微光
+      if (Math.random() < 0.35){
+        const a = Math.random() * Util.TAU;
+        FX.particle(Player.x + Math.cos(a) * S.r, 1.0, Player.z + Math.sin(a) * S.r,
+          0xb980ff, { life: 0.3, s0: 0.4, s1: 0, drag: 3 });
+      }
+    } else {
+      this.auraMesh.visible = false;
+    }
+
+    /* ---------- 散射霰弹 ---------- */
+    const sl = Progress.w('spread');
+    if (sl > 0 && T){
+      this.cd.spread -= dt;
+      if (this.cd.spread <= 0){
+        const S = this.TABLE.spread[sl - 1];
+        this.cd.spread = S.cd * rm;
+        const base = Math.atan2(T.x - Player.x, T.z - Player.z);
+        const crit = this.rollCrit();
+        for (let i = 0; i < S.n; i++){
+          const off = (i - (S.n - 1) / 2) / Math.max(1, S.n - 1) * S.arc;
+          Bullets.fire(Player.x + Math.sin(base) * 1.1, Player.z + Math.cos(base) * 1.1,
+            base + off, 54, S.dmg * (crit ? this.critMul() : 1),
+            { crit: crit && i === (S.n >> 1), y: 1.0, color: 0xe7ffb0, scale: 0.7, life: 0.7 });
+        }
+        const sx = Player.x + Math.sin(base) * 1.4, sz = Player.z + Math.cos(base) * 1.4;
+        FX.burst(sx, sz, 0xe7ffb0, 9, 3.8, 1);          // 霰弹枪口爆闪
+        FX.ring(sx, sz, 0xe7ffb0, 2.6, 0.16);
+        Audio2.spreadShot();
+      }
+    }
+
+    /* ---------- 环绕光刃 ---------- */
+    const ol = Progress.w('orbit');
+    this.orbitT += dt;
+    if (ol > 0){
+      const S = this.TABLE.orbit[ol - 1];
+      const pulse = Math.sin(this.orbitT * 6);
+      for (let i = 0; i < this.blades.length; i++){
+        const bl = this.blades[i];
+        if (i < S.n){
+          bl.mesh.visible = true;
+          const a = this.orbitT * S.spin + i / S.n * Util.TAU;
+          const bx = Player.x + Math.cos(a) * S.r;
+          const bz = Player.z + Math.sin(a) * S.r;
+          bl.mesh.position.set(bx, 1.0, bz);
+          bl.mesh.rotation.set(0, a, 0);
+          bl.mesh.material.opacity = 0.7 + pulse * 0.25;
+          // 切割拖尾：沿切线后方一柄半透明刃影，扫出刀光弧
+          const ta = a + Math.PI / 2;
+          const trl = 1.0;
+          bl.trail.visible = true;
+          bl.trail.position.set(bx - Math.cos(ta) * trl, 1.0, bz - Math.sin(ta) * trl);
+          bl.trail.rotation.set(0, a, 0);
+          bl.trail.material.opacity = 0.28 + pulse * 0.1;
+          bl.cd -= dt;
+          if (bl.cd <= 0){
+            const hits = Enemies.queryHit(bx, bz, 1.2);
+            if (hits.length){
+              bl.cd = 0.18;
+              const crit = this.rollCrit();
+              for (const e of hits){
+                Enemies.damage(e, S.dmg * (crit ? this.critMul() : 1), crit, e.x, e.z);
+                FX.hitSpark(e.x, e.z, 0x8ff0ff, 1.0);
+              }
+            }
+          }
+        } else { bl.mesh.visible = false; if (bl.trail) bl.trail.visible = false; }
+      }
+    } else {
+      for (const bl of this.blades){ bl.mesh.visible = false; if (bl.trail) bl.trail.visible = false; }
+    }
+
+    /* ---------- 连锁闪电 ---------- */
+    const chl = Progress.w('chain');
+    if (chl > 0){
+      this.cd.chain -= dt;
+      if (this.cd.chain <= 0 && T){
+        const S = this.TABLE.chain[chl - 1];
+        this.cd.chain = S.cd * rm;
+        const pts = [{x: Player.x, z: Player.z}];
+        let cur = T, prev = null;
+        for (let i = 0; i < S.bounces; i++){
+          if (!cur || !cur.alive) break;
+          const crit = this.rollCrit();
+          const dmg = S.dmg * (crit ? this.critMul() : 1);
+          Enemies.damage(cur, dmg, crit, cur.x, cur.z);
+          pts.push({x: cur.x, z: cur.z});
+          prev = cur;
+          cur = this._chainNext(cur.x, cur.z, S.range, prev);
+        }
+        for (let i = 1; i < pts.length; i++) this._chainBeam(pts[i - 1], pts[i]);
+        if (pts.length > 1){ Audio2.chainZap(); FX.ring(Player.x, Player.z, 0x9df6ff, 4.2, 0.28); }
+      }
+    }
+
+    /* ---------- 无人僚机 ---------- */
+    const dl = Progress.w('drone');
+    this.droneT += dt;
+    if (dl > 0){
+      const S = this.TABLE.drone[dl - 1];
+      const list = Enemies.pool.active;
+      for (let i = 0; i < this.drones.length; i++){
+        const d = this.drones[i];
+        if (i < S.n){
+          d.a = this.droneT * 1.4 + i / S.n * Util.TAU;
+          // 编队：基础环 + 相位游走（半径轻微呼吸，避免死板等距绕圈）
+          const wob = Math.sin(this.droneT * 0.8 + i * 2.1) * 0.7;
+          const rad = S.r + wob;
+          const tx = Player.x + Math.cos(d.a) * rad;
+          const tz = Player.z + Math.sin(d.a) * rad;
+          // 惯性跟随：朝目标位平滑插值（玩家急转时无人机甩尾跟进，更灵动）
+          const k = 1 - Math.exp(-8 * dt);
+          d.px += (tx - d.px) * k;
+          d.pz += (tz - d.pz) * k;
+          const dx = d.px, dz = d.pz;
+          const yy = 1.1 + Math.sin(this.droneT * 3 + i) * 0.18;
+          d.mesh.position.set(dx, yy, dz);
+          d.mesh.rotation.set(0, d.a, 0);
+          if (d.mesh.userData && d.mesh.userData.rotors) d.mesh.userData.rotors.rotation.y += dt * 26;
+          // 后坐：开火瞬间整体缩一下再弹回
+          if (d.recoil > 0) d.recoil = Math.max(0, d.recoil - dt * 6);
+          d.mesh.scale.setScalar(1 + d.recoil * 0.35);
+          d.mesh.visible = true;
+          d.cd -= dt;
+          if (d.cd <= 0){
+            // 找最近敌人
+            let nearest = null, bd = 30 * 30;
+            for (let k = 0; k < list.length; k++){
+              const e = list[k]; if (!e.alive) continue;
+              const dd = Util.dist2(dx, dz, e.x, e.z);
+              if (dd < bd){ bd = dd; nearest = e; }
+            }
+            if (nearest){
+              d.cd = S.cd * rm;
+              d.recoil = 1;
+              const dir = Math.atan2(nearest.x - dx, nearest.z - dz);
+              const crit = this.rollCrit();
+              Bullets.fire(dx, dz, dir, 50, S.dmg * (crit ? this.critMul() : 1),
+                { crit, color: 0xffcc33, scale: 0.7, life: 1.0, y: 1.1 });
+              FX.ring(dx + Math.sin(dir) * 0.9, dz + Math.cos(dir) * 0.9, 0xffcc33, 1.4, 0.12);
+              Audio2.droneBlip();
+            }
+          }
+        } else d.mesh.visible = false;
+      }
+    } else {
+      for (const d of this.drones) d.mesh.visible = false;
+    }
+
+    /* ---------- 湮灭新星 ---------- */
+    const nl = Progress.w('nova');
+    if (nl > 0){
+      this.cd.nova -= dt;
+      if (this.cd.nova <= 0 && (Enemies.pool.active.length > 0 || Boss.active)){
+        const S = this.TABLE.nova[nl - 1];
+        this.cd.nova = S.cd * rm;
+        FX.ring(Player.x, Player.z, 0xff5d8a, S.r, 0.5);
+        FX.ring(Player.x, Player.z, 0xffd24a, S.r * 0.62, 0.36);
+        FX.ring(Player.x, Player.z, 0xffffff, S.r * 0.3, 0.22);   // 核心白闪
+        FX.burst(Player.x, Player.z, 0xff5d8a, 16, 8, 1.4);        // 星爆射线
+        FX.burst(Player.x, Player.z, 0xffffff, 7, 4.5, 1.4);       // 核心白芯
+        const hits = Enemies.queryHit(Player.x, Player.z, S.r);
+        for (const e of hits){
+          const crit = this.rollCrit();
+          Enemies.damage(e, S.dmg * (crit ? this.critMul() : 1), crit, e.x, e.z);
+        }
+        if (Boss.active && Boss.hitTest(Player.x, Player.z, S.r))
+          Boss.damage(S.dmg * 0.7, false, Boss.x, Boss.z);
+        Audio2.novaBurst();
+      }
+    }
+
+    /* ---------- 回旋飞锯 ---------- */
+    const wl = Progress.w('saw');
+    if (wl > 0){
+      this.cd.saw -= dt;
+      if (this.cd.saw <= 0 && T){
+        const S = this.TABLE.saw[wl - 1];
+        this.cd.saw = S.cd * rm;
+        const base = Math.atan2(T.x - Player.x, T.z - Player.z);
+        let thrown = 0;
+        for (let i = 0; i < this.saws.length && thrown < S.n; i++){
+          const s = this.saws[i];
+          if (s.active) continue;
+          const a = base + (thrown - (S.n - 1) / 2) * 0.32;
+          s.active = true; s.t = 0; s.life = S.out * 2 + 0.8; s.out = S.out; s.returning = false;
+          s.x = Player.x; s.z = Player.z;
+          s.vx = Math.sin(a) * S.spd; s.vz = Math.cos(a) * S.spd;
+          s.dmg = S.dmg; s.hits = new Set(); s.bossHit = false; s.spin = 0;
+          s.mesh.visible = true;
+          thrown++;
+        }
+        if (thrown) Audio2.sawWhirl();
+      }
+    }
+    // 飞锯飞行 / 回旋归位
+    for (const s of this.saws){
+      if (!s.active) continue;
+      s.t += dt; s.life -= dt;
+      if (s.life <= 0){ s.active = false; s.mesh.visible = false; if (s.disc) s.disc.visible = false; continue; }
+      if (s.t > s.out && !s.returning){ s.returning = true; s.life = Math.max(s.life, 2.6); }
+      if (s.returning){
+        // 回旋归位：以高于玩家最高移速(26)的速度追向玩家自身，稳定飞回，不再"追不上就消失"
+        const dx = Player.x - s.x, dz = Player.z - s.z, d = Math.hypot(dx, dz);
+        const rs = 30;
+        if (d > 0.001){ s.vx = dx / d * rs; s.vz = dz / d * rs; }
+        if (d < 1.4){ s.active = false; s.mesh.visible = false; if (s.disc) s.disc.visible = false; continue; }
+      } else {
+        Util.clampArena(s, 0.5);              // 仅外抛阶段限制在场内
+      }
+      s.x += s.vx * dt; s.z += s.vz * dt;
+      s.spin += dt * 16;
+      s.mesh.position.set(s.x, 1.0, s.z);
+      s.mesh.rotation.set(0, s.spin, 0);
+      s.mesh.material.opacity = 0.9;
+      if (s.disc){ s.disc.visible = true; s.disc.position.set(s.x, 1.0, s.z); s.disc.material.opacity = 0.5; }
+      const hits = Enemies.queryHit(s.x, s.z, 1.4);
+      for (const e of hits){
+        if (s.hits.has(e._pi)) continue;
+        s.hits.add(e._pi);
+        const crit = this.rollCrit();
+        Enemies.damage(e, s.dmg * (crit ? this.critMul() : 1), crit, e.x, e.z);
+        FX.hitSpark(e.x, e.z, 0xffd24a, 1.0);
+      }
+      if (Boss.active && !s.bossHit && Boss.hitTest(s.x, s.z, 1.4)){
+        Boss.damage(s.dmg, false, s.x, s.z); s.bossHit = true;
+      }
+    }
+
+    /* ---------- 电磁轨道炮 ---------- */
+    const rl = Progress.w('rail');
+    if (rl > 0){
+      this.cd.rail -= dt;
+      if (this.cd.rail <= 0 && T){
+        const S = this.TABLE.rail[rl - 1];
+        this.cd.rail = S.cd * rm;
+        const dir = Math.atan2(T.x - Player.x, T.z - Player.z);
+        const crit = this.rollCrit();
+        Bullets.fire(Player.x, Player.z, dir, S.spd, S.dmg * (crit ? this.critMul() : 1),
+          { pierce: S.pierce, crit, color: crit ? 0xffcc33 : 0x9df6ff, scale: 1.4, life: 2.4, long: 3.2, y: 1.0 });
+        FX.ring(Player.x, Player.z, 0x9df6ff, 3, 0.18);
+        Audio2.rail();
+      }
+    }
+
+    /* ---------- 烈焰喷射 ---------- */
+    const fl = Progress.w('flame');
+    if (fl > 0){
+      this.cd.flame -= dt;
+      if (this.cd.flame <= 0){
+        const S = this.TABLE.flame[fl - 1];
+        this.cd.flame = S.cd * rm;
+        const base = T ? Math.atan2(T.x - Player.x, T.z - Player.z) : Player.yaw;
+        const list = Enemies.pool.active;
+        for (let i = 0; i < list.length; i++){
+          const e = list[i]; if (!e.alive) continue;
+          const dx = e.x - Player.x, dz = e.z - Player.z;
+          const d = Math.hypot(dx, dz);
+          if (d > S.range + e.r) continue;
+          const ang = Math.atan2(dx, dz);
+          const da = Math.abs(((ang - base + Math.PI) % Util.TAU) - Math.PI);
+          if (da > S.arc) continue;
+          const crit = this.rollCrit();
+          Enemies.damage(e, S.dmg * (crit ? this.critMul() : 1), crit, e.x, e.z);
+        }
+        if (Boss.active && !Boss.entering){
+          const dx = Boss.x - Player.x, dz = Boss.z - Player.z, d = Math.hypot(dx, dz);
+          if (d <= S.range + Boss.r){
+            const ang = Math.atan2(dx, dz);
+            const da = Math.abs(((ang - base + Math.PI) % Util.TAU) - Math.PI);
+            if (da <= S.arc) Boss.damage(S.dmg, false, Player.x, Player.z);
+          }
+        }
+        if (T){
+          for (let k = 0; k < 9; k++){
+            const a = base + Util.rand(-S.arc, S.arc);
+            const r = Util.rand(1.5, S.range);
+            FX.particle(Player.x + Math.sin(a) * r, 1.0 + Math.random() * 0.6,
+              Player.z + Math.cos(a) * r, Util.pick([0xff9a3d, 0xffd24a, 0xff5a2f]),
+              { life: Util.rand(0.2, 0.45), s0: Util.rand(0.4, 0.8), s1: 0, drag: 2.2,
+                vx: Math.sin(a) * 4, vz: Math.cos(a) * 4, vy: Util.rand(1, 3) });
+          }
+          Audio2.flame();
+        }
+      }
+    }
+
+    /* ---------- 声波脉冲 ---------- */
+    const pl = Progress.w('pulse');
+    if (pl > 0){
+      this.cd.pulse -= dt;
+      if (this.cd.pulse <= 0){
+        const S = this.TABLE.pulse[pl - 1];
+        this.cd.pulse = S.cd * rm;
+        this.pulses.push({ x: Player.x, z: Player.z, t: 0, life: 0.6, maxR: S.r, dmg: S.dmg, hit: new Set(), col: 0x39e0ff });
+        FX.ring(Player.x, Player.z, 0x39e0ff, S.r, 0.6);
+        Audio2.pulse();
+      }
+    }
+    // 推进所有脉冲波（薄壳命中，像涟漪扫过敌群）
+    for (let i = this.pulses.length - 1; i >= 0; i--){
+      const p = this.pulses[i];
+      p.t += dt;
+      if (p.t >= p.life){ this.pulses.splice(i, 1); continue; }
+      const tt = p.t / p.life;
+      const radius = Util.lerp(0.5, p.maxR, 1 - Math.pow(1 - tt, 2));
+      const list = Enemies.pool.active;
+      for (let j = 0; j < list.length; j++){
+        const e = list[j]; if (!e.alive || p.hit.has(e._pi)) continue;
+        const d = Math.hypot(e.x - p.x, e.z - p.z);
+        if (Math.abs(d - radius) < 1.3){
+          const crit = this.rollCrit();
+          Enemies.damage(e, p.dmg * (crit ? this.critMul() : 1), crit, e.x, e.z);
+          p.hit.add(e._pi);
+        }
+      }
+      if (Boss.active && !Boss.entering && !p.hit.has('boss')){
+        const d = Math.hypot(Boss.x - p.x, Boss.z - p.z);
+        if (Math.abs(d - radius) < 1.3){ Boss.damage(p.dmg, false, p.x, p.z); p.hit.add('boss'); }
+      }
+    }
+
+    /* ---------- 光束衰减 ---------- */
+    for (const b of this.beams){
+      if (b.life > 0){
+        b.life -= dt * 4.2;
+        if (b.life <= 0){ b.life = 0; b.mesh.visible = false; }
+        else { b.outer.material.opacity = 0.5 * b.life; b.core.material.opacity = 0.95 * b.life; }
+      }
+    }
+    /* ---------- 闪电衰减 ---------- */
+    for (const b of this.bolts){
+      if (b.life > 0){
+        b.life -= dt * 6;
+        if (b.life <= 0){ b.life = 0; b.line.visible = false; }
+        else b.line.material.opacity = Math.min(1, b.life * 1.2);
+      }
+    }
+
+    /* ---------- 新武器 C①：冷冻射线 / 轨道打击 / 蜂群导弹 / 离子风暴 ---------- */
+    const fr = Progress.w('frost');
+    if (fr > 0){
+      this.cd.frost -= dt;
+      if (this.cd.frost <= 0 && T){
+        const S = this.TABLE.frost[fr - 1];
+        this.cd.frost = S.cd * rm;
+        const base = Math.atan2(T.x - Player.x, T.z - Player.z);
+        for (let i = 0; i < S.n; i++){
+          const off = (i - (S.n - 1) / 2) * 0.12;
+          const crit = this.rollCrit();
+          const dmg = S.dmg * (crit ? this.critMul() : 1);
+          Bullets.fire(Player.x + Math.sin(base) * 1.2, Player.z + Math.cos(base) * 1.2,
+            base + off, 58, dmg, { pierce: S.pierce, crit, long: 1.2, color: 0x7fe6ff, life: 1.1, frost: true });
+        }
+        Audio2.frostZap();
+      }
+    }
+
+    const mt = Progress.w('meteor');
+    if (mt > 0){
+      this.cd.meteor -= dt;
+      if (this.cd.meteor <= 0){
+        const S = this.TABLE.meteor[mt - 1];
+        this.cd.meteor = S.cd * rm;
+        let tx = T ? T.x : Player.x, tz = T ? T.z : Player.z;
+        if (!T){ const near = this.nearestTo(Player.x, Player.z, 60); if (near){ tx = near.x; tz = near.z; } }
+        const geo = Asteroids.geos[Math.floor(Math.random() * Asteroids.geos.length)];
+        const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: 0x9a8f80 }));
+        mesh.position.set(tx, 22, tz); World.scene.add(mesh);
+        this.meteors.push({ x: tx, z: tz, t: 1.0, r: S.r, dmg: S.dmg, mesh });
+        FX.ring(tx, tz, 0xffaa33, S.r, 0.9);
+        Audio2.meteorWarn();
+      }
+    }
+
+    const sw = Progress.w('swarm');
+    if (sw > 0){
+      this.cd.swarm -= dt;
+      if (this.cd.swarm <= 0 && T){
+        const S = this.TABLE.swarm[sw - 1];
+        this.cd.swarm = S.cd * rm;
+        const tgs = this.pickTargets(S.n);
+        for (let i = 0; i < S.n; i++){
+          const crit = this.rollCrit();
+          const tg = tgs[i] || T;
+          const a = Player.yaw + Math.PI + (i / S.n) * Util.TAU + Util.rand(-0.1, 0.1);
+          Bullets.missile(Player.x, Player.z, S.dmg * (crit ? this.critMul() : 1), tg,
+            { dir: a, splash: S.splash, crit, spd: 14, scale: 0.5 });
+        }
+        Audio2.missile();
+      }
+    }
+
+    const st = Progress.w('storm');
+    if (st > 0){
+      this.cd.storm -= dt;
+      if (this.cd.storm <= 0 && Enemies.pool.active.length > 0){
+        const S = this.TABLE.storm[st - 1];
+        this.cd.storm = S.cd * rm;
+        const list = Enemies.pool.active;
+        for (let i = 0; i < S.strikes; i++){
+          const e = list[Math.floor(Math.random() * list.length)];
+          if (!e || !e.alive) continue;
+          const crit = this.rollCrit();
+          const dmg = S.dmg * (crit ? this.critMul() : 1);
+          this._chainBeam({ x: e.x, z: e.z, sky: true }, e);
+          Enemies.damage(e, dmg, crit, e.x, e.z);
+        }
+        if (S.strikes > 0) Audio2.stormCrack();
+      }
+    }
+
+    // 轨道打击坠落结算（预警 1s 后砸下）
+    for (let i = this.meteors.length - 1; i >= 0; i--){
+      const m = this.meteors[i];
+      if (m.mesh) m.mesh.position.y = Math.max(0, 22 * m.t);
+      if (m.t > 0){ m.t -= dt; continue; }
+      Enemies.splash(m.x, m.z, m.r, m.dmg, false);
+      FX.ring(m.x, m.z, 0xffd27f, m.r, 0.4);
+      FX.burst(m.x, m.z, 0xffb24a, 10, 6, 1.2);
+      World.shake(0.9, 0.25);
+      Audio2.meteorFall();
+      if (m.mesh){ World.scene.remove(m.mesh); m.mesh = null; }
+      this.meteors.splice(i, 1);
+    }
+
+    /* ---------- C② 新武器：黑洞 / 相位护盾 / 光子跳弹 / 牵引光束 / 旋转相阵 / 太空雷阵 / 纳米修复 ---------- */
+
+    // 黑洞：生成引力井，吸附+灼烧，到期坍缩
+    const bh = Progress.w('blackhole');
+    if (bh > 0){
+      this.cd.blackhole -= dt;
+      if (this.cd.blackhole <= 0 && (Enemies.pool.active.length > 0 || Boss.active)){
+        const S = this.TABLE.blackhole[bh - 1];
+        this.cd.blackhole = 6.5 * rm;
+        let bx = T ? T.x : Player.x, bz = T ? T.z : Player.z;
+        if (!T){ const near = this.nearestTo(Player.x, Player.z, 60); if (near){ bx = near.x; bz = near.z; } }
+        const g = new THREE.Group();
+        const eh = new THREE.Mesh(new THREE.SphereGeometry(1.15, 16, 12),
+          new THREE.MeshBasicMaterial({ color: 0x05030a, transparent: true, opacity: 0.96 }));
+        eh.position.y = 1.0; g.add(eh);
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(1.7, 0.22, 8, 32),
+          new THREE.MeshBasicMaterial({ color: 0xc77dff, transparent: true, opacity: 0.8,
+            blending: THREE.AdditiveBlending, depthWrite: false }));
+        ring.rotation.x = Math.PI / 2; ring.position.y = 1.0; g.add(ring);
+        g.position.set(bx, 0, bz); g.visible = true; World.scene.add(g);
+        this.blackholes.push({ x: bx, z: bz, t: 0, life: S.life, r: S.r, dps: S.dps, pull: S.pull, mesh: g, ring });
+        FX.ring(bx, bz, 0xc77dff, S.r, 0.5);
+        Audio2.blackhole();
+      }
+    }
+    for (let i = this.blackholes.length - 1; i >= 0; i--){
+      const h = this.blackholes[i];
+      h.t += dt;
+      h.ring.rotation.z += dt * 3;
+      h.ring.scale.setScalar(1 + Math.sin(h.t * 5) * 0.05);
+      if (h.t >= h.life){
+        Enemies.splash(h.x, h.z, h.r * 0.7, h.dps * 2.2, false);
+        if (Boss.active && Boss.hitTest(h.x, h.z, h.r * 0.7)) Boss.damage(h.dps * 1.4, false, h.x, h.z);
+        FX.ring(h.x, h.z, 0xc77dff, h.r, 0.5);
+        FX.burst(h.x, h.z, 0xc77dff, 14, 7, 1.2);
+        World.shake(1.1, 0.3); Audio2.boom();
+        World.scene.remove(h.mesh); this.blackholes.splice(i, 1); continue;
+      }
+      const list = Enemies.pool.active;
+      for (let j = 0; j < list.length; j++){
+        const e = list[j]; if (!e.alive) continue;
+        const dx = h.x - e.x, dz = h.z - e.z, d = Math.hypot(dx, dz);
+        if (d > h.r || d < 0.001) continue;
+        const f = Math.min(d, h.pull * dt);
+        e.x += dx / d * f; e.z += dz / d * f;
+        Enemies.damage(e, h.dps * dt, false, e.x, e.z, false);
+      }
+    }
+
+    // 相位护盾：周期展开吸收护盾
+    const ph = Progress.w('phase');
+    if (ph > 0){
+      this.cd.phase -= dt;
+      if (this.cd.phase <= 0){
+        const S = this.TABLE.phase[ph - 1];
+        this.cd.phase = S.cd * rm;
+        Player.phaseHp = S.hp; Player.phaseMax = S.hp; Player.phaseT = S.dur;
+        FX.ring(Player.x, Player.z, 0x38f0ff, 3.0, 0.4);
+        Audio2.phase();
+      }
+      if (Player.phaseT > 0) Player.phaseT -= dt;
+      else Player.phaseHp = 0;
+    }
+
+    // 光子跳弹：弹射贯穿
+    const pt = Progress.w('photon');
+    if (pt > 0){
+      this.cd.photon -= dt;
+      if (this.cd.photon <= 0 && T){
+        const S = this.TABLE.photon[pt - 1];
+        this.cd.photon = S.cd * rm;
+        const base = Math.atan2(T.x - Player.x, T.z - Player.z);
+        for (let i = 0; i < S.n; i++){
+          const a = base + (i - (S.n - 1) / 2) * 0.4;
+          const mesh = new THREE.Mesh(this.photonGeo, new THREE.MeshBasicMaterial({
+            color: 0xeafcff, transparent: true, opacity: 1,
+            blending: THREE.AdditiveBlending, depthWrite: false }));
+          mesh.position.set(Player.x, 1.1, Player.z); World.scene.add(mesh);
+          this.photons.push({ x: Player.x, z: Player.z, y: 1.1,
+            vx: Math.sin(a) * 40, vz: Math.cos(a) * 40, dmg: S.dmg, life: 0,
+            max: 2.4, bounces: S.bounce, hits: new Set(), mesh });
+        }
+        Audio2.photon();
+      }
+    }
+    for (let i = this.photons.length - 1; i >= 0; i--){
+      const p = this.photons[i];
+      p.life += dt;
+      if (p.life >= p.max){ World.scene.remove(p.mesh); this.photons.splice(i, 1); continue; }
+      p.x += p.vx * dt; p.z += p.vz * dt;
+      p.mesh.position.set(p.x, p.y, p.z);
+      if (Math.random() < 0.8) FX.particle(p.x, p.y, p.z, 0xeafcff, { life: 0.2, s0: 0.4, s1: 0, drag: 4 });
+      const hits = Enemies.queryHit(p.x, p.z, 0.7);
+      let bounced = false;
+      for (const e of hits){
+        if (p.hits.has(e._pi)) continue;
+        p.hits.add(e._pi);
+        const crit = this.rollCrit();
+        Enemies.damage(e, p.dmg * (crit ? this.critMul() : 1), crit, e.x, e.z);
+        FX.hitSpark(e.x, e.z, 0xeafcff, 1.0);
+        p.bounces--; bounced = true;
+      }
+      if (bounced){
+        if (p.bounces <= 0){ World.scene.remove(p.mesh); this.photons.splice(i, 1); continue; }
+        let best = null, bd = 16 * 16;
+        const list = Enemies.pool.active;
+        for (let j = 0; j < list.length; j++){
+          const e = list[j]; if (!e.alive || p.hits.has(e._pi)) continue;
+          const d = Util.dist2(p.x, p.z, e.x, e.z);
+          if (d < bd){ bd = d; best = e; }
+        }
+        if (best){
+          const a = Math.atan2(best.x - p.x, best.z - p.z);
+          const sp = Math.hypot(p.vx, p.vz) || 40;
+          p.vx = Math.sin(a) * sp; p.vz = Math.cos(a) * sp;
+        } else { World.scene.remove(p.mesh); this.photons.splice(i, 1); continue; }
+      }
+      if (Math.hypot(p.x, p.z) > CFG.arena + 8){ World.scene.remove(p.mesh); this.photons.splice(i, 1); }
+    }
+
+    // 牵引光束：持续聚敌灼烧
+    const tr = Progress.w('tractor');
+    if (tr > 0){
+      const S = this.TABLE.tractor[tr - 1];
+      this.tractorMesh.visible = true;
+      const pul = 1 + Math.sin(this.orbitT * 4) * 0.06;
+      this.tractorMesh.position.set(Player.x, 1.0, Player.z);
+      this.tractorMesh.scale.set(S.r * pul, 1, S.r * pul);
+      this.tractorMesh.material.opacity = 0.06 + Math.sin(this.orbitT * 6) * 0.03;
+      const list = Enemies.pool.active;
+      for (let j = 0; j < list.length; j++){
+        const e = list[j]; if (!e.alive) continue;
+        const dx = Player.x - e.x, dz = Player.z - e.z, d = Math.hypot(dx, dz);
+        if (d > S.r) continue;
+        if (d > 3){ const f = Math.min(d - 3, S.pull * dt); e.x += dx / d * f; e.z += dz / d * f; }
+        e.slowT = 0.2; e.slowK = Math.max(e.slowK, 0.3);
+        Enemies.damage(e, S.dps * dt, false, e.x, e.z, false);
+      }
+      if (Math.random() < 0.5){
+        const a = Math.random() * Util.TAU, rr = S.r * Util.rand(0.5, 1);
+        FX.particle(Player.x + Math.cos(a) * rr, 1.0, Player.z + Math.sin(a) * rr,
+          0x38f0ff, { life: 0.3, s0: 0.35, s1: 0, drag: 3,
+            vx: -Math.cos(a) * 6, vz: -Math.sin(a) * 6 });
+      }
+    } else {
+      this.tractorMesh.visible = false;
+    }
+
+    // 旋转相阵：环绕节点接触杀伤
+    const ro = Progress.w('rotor');
+    this.rotorT2 += dt;
+    if (ro > 0){
+      const S = this.TABLE.rotor[ro - 1];
+      for (let i = 0; i < this.rotorNodes.length; i++){
+        const rn = this.rotorNodes[i];
+        if (i < S.n){
+          rn.mesh.visible = true;
+          const a = this.rotorT2 * S.spin + i / S.n * Util.TAU;
+          const rx = Player.x + Math.cos(a) * S.r, rz = Player.z + Math.sin(a) * S.r;
+          rn.mesh.position.set(rx, 1.0, rz);
+          rn.mesh.rotation.set(this.rotorT2 * 3, this.rotorT2 * 3, 0);
+          rn.cd -= dt;
+          if (rn.cd <= 0){
+            const hits = Enemies.queryHit(rx, rz, 1.3);
+            if (hits.length){
+              rn.cd = 0.22;
+              const crit = this.rollCrit();
+              for (const e of hits) Enemies.damage(e, S.dmg * (crit ? this.critMul() : 1), crit, e.x, e.z);
+              FX.hitSpark(rx, rz, 0xffd95c, 1.0);
+            }
+          }
+        } else rn.mesh.visible = false;
+      }
+    } else {
+      for (const rn of this.rotorNodes) rn.mesh.visible = false;
+    }
+
+    // 太空雷阵：周期布设，敌近即爆
+    const mn = Progress.w('mine');
+    if (mn > 0){
+      this.cd.mine -= dt;
+      if (this.cd.mine <= 0){
+        const S = this.TABLE.mine[mn - 1];
+        this.cd.mine = S.cd * rm;
+        for (let i = 0; i < S.n; i++){
+          const slot = this.minePool.find(m => !m.alive);
+          if (!slot) break;
+          const a = Math.random() * Util.TAU, rr = Util.rand(3, 6);
+          slot.alive = true; slot.x = Player.x + Math.cos(a) * rr; slot.z = Player.z + Math.sin(a) * rr;
+          slot.t = 0; slot.arm = 0.6; slot.r = S.r; slot.dmg = S.dmg;
+          slot.mesh.position.set(slot.x, 1.0, slot.z); slot.mesh.visible = true;
+          FX.ring(slot.x, slot.z, 0xff6b3d, 1.4, 0.2);
+        }
+        Audio2.mine();
+      }
+    }
+    for (const m of this.minePool){
+      if (!m.alive) continue;
+      m.t += dt;
+      if (m.arm > 0){
+        m.arm -= dt; m.mesh.material.opacity = 0.4 + Math.abs(Math.sin(m.t * 8)) * 0.5;
+      } else {
+        m.mesh.rotation.y += dt * 2; m.mesh.rotation.x += dt * 1.4;
+        m.mesh.material.opacity = 0.95;
+        let trig = false;
+        const list = Enemies.pool.active;
+        for (let j = 0; j < list.length; j++){
+          const e = list[j]; if (!e.alive) continue;
+          if (Util.dist2(m.x, m.z, e.x, e.z) < (2.2 + e.r) ** 2){ trig = true; break; }
+        }
+        if (!trig && Boss.active && Boss.hitTest(m.x, m.z, 2.2)) trig = true;
+        if (trig){
+          Enemies.splash(m.x, m.z, m.r, m.dmg, false);
+          if (Boss.active && Boss.hitTest(m.x, m.z, m.r)) Boss.damage(m.dmg, false, m.x, m.z);
+          FX.ring(m.x, m.z, 0xff6b3d, m.r, 0.4);
+          FX.burst(m.x, m.z, 0xffb24a, 10, 6, 1.2);
+          World.shake(0.7, 0.22); Audio2.mine();
+          m.alive = false; m.mesh.visible = false; continue;
+        }
+      }
+      if (m.t > 10){ m.alive = false; m.mesh.visible = false; }   // 寿命上限，避免占场
+    }
+
+    // 纳米修复：周期治疗
+    const na = Progress.w('nano');
+    if (na > 0){
+      this.cd.nano -= dt;
+      if (this.cd.nano <= 0){
+        const S = this.TABLE.nano[na - 1];
+        this.cd.nano = S.cd * rm;
+        Player.heal(S.hp);
+        FX.cross(Player.x, Player.z, 0x5dff9b);
+        FX.ring(Player.x, Player.z, 0x5dff9b, 4, 0.4);
+        for (let k = 0; k < 6; k++){
+          const a = Math.random() * Util.TAU;
+          FX.particle(Player.x + Math.cos(a) * 2, 1.2, Player.z + Math.sin(a) * 2,
+            0x5dff9b, { life: 0.5, s0: 0.5, s1: 0, drag: 2,
+              vx: -Math.cos(a) * 3, vz: -Math.sin(a) * 2, vy: 1.2 });
+        }
+        Audio2.nano();
+      }
+    }
+  },
+
+  pickTargets(n){
+    const list = Enemies.pool.active;
+    const arr = [];
+    for (let i = 0; i < list.length; i++){
+      const e = list[i];
+      const d = Util.dist2(Player.x, Player.z, e.x, e.z);
+      if (d < 46 * 46) arr.push({ e, d });
+    }
+    arr.sort((a, b) => a.d - b.d);
+    const out = arr.slice(0, n).map(o => o.e);
+    if (!out.length && Boss.active && !Boss.entering) out.push(Boss.asTarget());
+    return out;
+  },
+
+  /** 贯穿光束：沿射线打到所有敌人 */
+  beam(target, S, lv){
+    const dir = Math.atan2(target.x - Player.x, target.z - Player.z);
+    const len = 54;
+    const dx = Math.sin(dir), dz = Math.cos(dir);
+    const crit = this.rollCrit();
+    const dmg = S.dmg * (crit ? this.critMul() : 1);
+
+    // 沿线段采样命中（步进法，简单可靠）
+    const seen = new Set();
+    const step = 1.5;
+    for (let t = 1; t < len; t += step){
+      const px = Player.x + dx * t, pz = Player.z + dz * t;
+      const hits = Enemies.queryHit(px, pz, S.w + 0.9);
+      for (const e of hits){
+        if (seen.has(e._pi)) continue;
+        seen.add(e._pi);
+        Enemies.damage(e, dmg, crit, e.x, e.z);
+      }
+      if (Boss.active && Boss.hitTest(px, pz, S.w + 0.9) && !seen.has('boss')){
+        seen.add('boss'); Boss.damage(dmg, crit, px, pz);
+      }
+    }
+
+    // 视觉
+    const b = this.beams.find(x => x.life <= 0);
+    if (b){
+      b.life = 1;
+      b.mesh.visible = true;
+      b.mesh.position.set(Player.x, 1.0, Player.z);
+      b.mesh.rotation.set(0, dir, 0);
+      b.outer.scale.set(S.w, S.w, len);
+      b.core.scale.set(S.w * 0.42, S.w * 0.42, len);
+      b.outer.material.color.setHex(crit ? 0xffcc33 : 0x9df6ff);
+      b.outer.material.opacity = 0.5;
+      b.core.material.color.setHex(0xffffff);
+      b.core.material.opacity = 0.95;
+    }
+    FX.burst(Player.x + dx * 1.6, Player.z + dz * 1.6, 0x9df6ff, 4, 4, 1);
+  },
+};
+
+/* ============================ Wingmen 僚机 ============================ */
+/* 行为：free=自主游走去索敌压制（默认）；follow=跟随编队；guard=贴身护卫圈 */
+const Wingmen = {
+  list: [], group: null, formation: 0, orbT: 0,
+  behavior: 'free',
+  BEHAVIORS: ['自主游走', '跟随编队', '贴身护卫'],
+  FORMS: ['楔形跟随', '环绕护卫', '横列展开'],
+
+  SPEC: {
+    striker:  { name:'突击僚机', color: CFG.colors.striker,  cd:0.62, dmg:11, spd:26, mesh:'wing_a',       s:0.9  },
+    warden:   { name:'守护僚机', color: CFG.colors.warden,   cd:1.30, dmg:7,  spd:22, mesh:'wing_b',       s:0.9  },
+    howitzer: { name:'榴弹僚机', color: CFG.colors.howitzer, cd:1.75, dmg:30, spd:18, mesh:'enemy_charger', s:0.9  },
+    phantom:  { name:'幽灵刺客', color:0xb980ff,              cd:1.50, dmg:42, spd:24, mesh:'enemy_orbiter', s:0.95 },
+    medic:    { name:'医疗机',   color:0x6dff8b,              cd:3.20, dmg:0,  spd:24, mesh:'hauler',       s:0.95 },
+  },
+
+  init(){
+    this.group = new THREE.Group();
+    World.scene.add(this.group);
+  },
+
+  add(type){
+    if (this.list.length >= 6) return null;
+    const S = this.SPEC[type];
+    if (!S) return null;
+    const built = (type === 'medic') ? Gfx.medic(S.color, S.s) : Gfx.ship(S.mesh, S.color, S.s);
+    const g = new THREE.Group();
+    built.g.position.y = 1.5;
+    g.add(built.g);
+    const thr = Gfx.thruster(S.color, 0.22, -0.7);
+    thr.position.y = 1.5;
+    g.add(thr);
+    g.add(Gfx.glow(S.color, 1.3, 0.22));
+    this.group.add(g);
+
+    const w = {
+      type, spec: S, g, shipG: built.g, thr,
+      x: Player.x, z: Player.z, vx: 0, vz: 0, yaw: 0, cd: Math.random() * S.cd,
+      slot: this.list.length, bob: Math.random() * 6,
+    };
+    this.list.push(w);
+    this.reslot();
+    FX.ring(Player.x, Player.z, S.color, 6, 0.5);
+    return w;
+  },
+
+  reslot(){ this.list.forEach((w, i) => { w.slot = i; }); },
+
+  cycleFormation(){
+    this.formation = (this.formation + 1) % 3;
+    this.behavior = ['free', 'follow', 'guard'][this.formation];
+    if (Game.state === 'PLAYING') HUD.toast(this.BEHAVIORS[this.formation], '僚机行为', '#ffcc33', 0.9);
+    return this.formation;
+  },
+
+  /** 队形目标点 */
+  slotPos(w, i, n){
+    const back = Player.yaw + Math.PI;
+    if (this.formation === 0){                 // 楔形：分列机尾两侧
+      const side = (i % 2 ? 1 : -1);
+      const row = Math.floor(i / 2) + 1;
+      const d = 3.0 + row * 1.5, lat = side * (1.9 + row * 0.55);
+      return { x: Player.x + Math.sin(back) * d + Math.cos(back) * lat,
+               z: Player.z + Math.cos(back) * d - Math.sin(back) * lat };
+    }
+    if (this.formation === 1){                 // 环绕
+      const a = this.orbT + i / Math.max(1, n) * Util.TAU;
+      const r = 5.4;
+      return { x: Player.x + Math.cos(a) * r, z: Player.z + Math.sin(a) * r };
+    }
+    // 横列：垂直于朝向一字排开
+    const side = (i % 2 ? 1 : -1), row = Math.floor(i / 2) + 1;
+    const lat = side * row * 2.9;
+    return { x: Player.x + Math.cos(Player.yaw) * lat,
+             z: Player.z - Math.sin(Player.yaw) * lat };
+  },
+
+  update(dt){
+    this.orbT += dt * 0.8;
+    const n = this.list.length;
+    const px = Player.x, pz = Player.z;
+    for (let i = 0; i < n; i++){
+      const w = this.list[i];
+      w.bob += dt;
+
+      // 自主索敌：比玩家更宽的视野，体现「自由」
+      const tgt = Weapons.nearestTo(w.x, w.z, 44) ||
+                  (Boss.active && !Boss.entering ? Boss.asTarget() : null);
+
+      // 期望位置
+      let dx, dz;
+      if (this.behavior === 'follow'){
+        const p = this.slotPos(w, i, n);
+        dx = p.x - w.x; dz = p.z - w.z;
+      } else if (this.behavior === 'guard'){
+        const a = this.orbT * 0.6 + i / Math.max(1, n) * Util.TAU;
+        const R = 4.2;
+        dx = (px + Math.cos(a) * R) - w.x;
+        dz = (pz + Math.sin(a) * R) - w.z;
+      } else {                                   // free：自主游走
+        if (tgt){
+          const td = Math.hypot(tgt.x - w.x, tgt.z - w.z);
+          dx = tgt.x - w.x; dz = tgt.z - w.z;
+          if (td < 11){ dx *= 0.15; dz *= 0.15; }   // 进入射程就悬停压制
+        } else {
+          const ang = this.orbT * 0.5 + w.slot * 2.0;
+          const R = 8 + w.slot * 1.3;
+          dx = (px + Math.cos(ang) * R) - w.x;
+          dz = (pz + Math.sin(ang) * R) - w.z;
+        }
+        // 自由模式牵绳更长：过远则被拉回
+        const pd = Math.hypot(w.x - px, w.z - pz);
+        if (pd > 26){ dx += (px - w.x) * 1.2; dz += (pz - w.z) * 1.2; }
+      }
+
+      // 僚机彼此分离，避免叠成一坨
+      for (let j = 0; j < n; j++){
+        if (j === i) continue;
+        const o = this.list[j];
+        const ddx = w.x - o.x, ddz = w.z - o.z;
+        const d2 = ddx*ddx + ddz*ddz;
+        if (d2 < 9 && d2 > 0.001){
+          const d = Math.sqrt(d2);
+          dx += ddx / d * (1 - d / 3) * 1.4;
+          dz += ddz / d * (1 - d / 3) * 1.4;
+        }
+      }
+
+      // 远离敌人：不要撞上去（保持缓冲，自由模式仍能贴近火力压制）
+      {
+        const ea = Enemies.pool.active;
+        for (let j = 0; j < ea.length; j++){
+          const e = ea[j]; if (!e.alive) continue;
+          const edx = w.x - e.x, edz = w.z - e.z;
+          const ed2 = edx*edx + edz*edz;
+          const er = (e.r || 1) + 3.0;
+          if (ed2 < er*er && ed2 > 0.001){
+            const d = Math.sqrt(ed2);
+            const f = (1 - d / er) * 2.8;
+            dx += edx / d * f; dz += edz / d * f;
+          }
+        }
+      }
+
+      const l = Math.hypot(dx, dz) || 1;
+      const sp = (this.behavior === 'follow' ? w.spec.spd * 0.85 : w.spec.spd);
+      const k = 1 - Math.exp(-7 * dt);
+      w.vx += (dx / l * sp - w.vx) * k;
+      w.vz += (dz / l * sp - w.vz) * k;
+      w.x += w.vx * dt; w.z += w.vz * dt;
+      Util.clampArena(w, 0.6);
+      // 硬解算：万一贴太近，直接把僚机推出敌人，绝不嵌进去
+      {
+        const ea = Enemies.pool.active;
+        for (let j = 0; j < ea.length; j++){
+          const e = ea[j]; if (!e.alive) continue;
+          const edx = w.x - e.x, edz = w.z - e.z;
+          const ed2 = edx*edx + edz*edz;
+          const er = (e.r || 1) + 1.2;
+          if (ed2 < er*er && ed2 > 0.001){
+            const d = Math.sqrt(ed2);
+            const need = er - d;
+            w.x += edx / d * need; w.z += edz / d * need;
+          }
+        }
+        Util.clampArena(w, 0.6);
+      }
+
+      // 开火
+      w.cd -= dt;
+      // 医疗机：定时给玩家回血（不需目标，不射击）
+      if (w.type === 'medic'){
+        if (w.cd <= 0 && Player.hp < Player.maxHp){
+          w.cd = w.spec.cd;
+          Player.heal(6);
+          FX.ring(w.x, w.z, w.spec.color, 3.2, 0.32);
+          FX.cross(Player.x, Player.z, w.spec.color);
+        }
+        w.yaw = Util.angLerp(w.yaw, Math.atan2(px - w.x, pz - w.z), 1 - Math.exp(-5 * dt));
+      } else if (tgt){
+        w.yaw = Util.angLerp(w.yaw, Math.atan2(tgt.x - w.x, tgt.z - w.z), 1 - Math.exp(-10 * dt));
+        if (w.cd <= 0){
+          w.cd = w.spec.cd * Weapons.rateMul();
+          const crit = Weapons.rollCrit();
+          const mul = crit ? Weapons.critMul() : 1;
+          const dir = Math.atan2(tgt.x - w.x, tgt.z - w.z);
+          if (w.type === 'striker'){
+            for (let s = 0; s < 2; s++)
+              Bullets.fire(w.x, w.z, dir + (s - 0.5) * 0.1, w.spec.spd,
+                w.spec.dmg * mul, { crit, y: 1.4, color: crit ? 0xffcc33 : 0xffe08a,
+                  scale: 0.8, life: 1.1 });
+          } else if (w.type === 'howitzer'){
+            Bullets.missile(w.x, w.z, w.spec.dmg * mul, tgt,
+              { dir, splash: 4.4, crit, spd: 10, scale: 1.25, color: 0xff8a3d, turn: 3.4 });
+          } else if (w.type === 'phantom'){
+            // 幽灵刺客：高伤穿透直射
+            Bullets.fire(w.x, w.z, dir, w.spec.spd * 0.7, w.spec.dmg * mul,
+              { crit, y: 1.5, color: 0xb980ff, scale: 1.25, life: 1.4, pierce: 2 });
+          } else {
+            Bullets.fire(w.x, w.z, dir, w.spec.spd, w.spec.dmg * mul,
+              { crit, y: 1.4, color: 0x5dff9b, scale: 0.9, life: 0.8 });
+          }
+          FX.burst(w.x + Math.sin(dir) * 0.9, w.z + Math.cos(dir) * 0.9, w.spec.color, 3, 2, 1.4);
+          Audio2.shoot();
+        }
+      } else {
+        w.yaw = Util.angLerp(w.yaw, Math.atan2(px - w.x, pz - w.z), 1 - Math.exp(-5 * dt));
+      }
+
+      // 表现
+      const moving = Math.hypot(w.vx, w.vz);
+      w.g.position.set(w.x, 0, w.z);
+      w.shipG.rotation.y = w.yaw;
+      w.shipG.position.y = 1.5 + Math.sin(w.bob * 3) * 0.13;
+      w.shipG.rotation.z = Math.sin(w.bob * 1.7) * 0.1 + Util.clamp(-w.vx * 0.04, -0.3, 0.3);
+      w.thr.rotation.y = w.yaw;
+      w.thr.scale.set(0.7 + Math.min(1, moving / 30), 0.7 + Math.min(1, moving / 30), 1);
+      if (moving > 6 && Math.random() < 0.4)
+        FX.particle(w.x - Math.sin(w.yaw) * 1.0, 0.7, w.z - Math.cos(w.yaw) * 1.0, w.spec.color,
+          { life: 0.3, s0: 0.35, s1: 0, drag: 4 });
+    }
+  },
+
+  /** warden 拦截敌弹：返回拦截者 */
+  intercept(x, z, r){
+    for (const w of this.list){
+      if (w.type !== 'warden') continue;
+      if (Util.dist2(x, z, w.x, w.z) < (r + 2.1) ** 2) return w;
+    }
+    return null;
+  },
+
+  count(type){ return this.list.filter(w => w.type === type).length; },
+
+  clear(){
+    for (const w of this.list) this.group.remove(w.g);
+    this.list.length = 0;
+    this.formation = 0;
+  },
+};
+
+/* ==================== p6_enemies.js ==================== */
+
+/* ============================ Enemies 敌人 ============================ */
+const Enemies = {
+  pool: null, group: null, spawnCd: 0,
+  _curTint: null,   // 当前星域的统一敌群配色（分裂子代 / BOSS 召唤复用）
+  blastQ: [],   // 重甲死亡爆炸队列，成对存 [x,z]，在 update 里迭代结算
+
+  /* 种类基准值（会被波次系数放大）
+     三支外星舰队（仅世界观/布阵归属，机制不变）：
+       残骸掠夺者  : charger kamikaze splitter brute
+       虚空母巢    : wasp(蜂群机) mender(修理舰)
+       深渊军团    : sniper turret phaser(相位折跃者)
+     （注：方案中的 spread/buffer/stalker 等新敌种将在后续阶段并入，key 不与武器冲突） */
+  SPEC: {
+    charger:  { hp:22,  spd:9.5,  r:0.95, dmg:9,  xp:1, color:CFG.colors.charger,  ai:'chase', variants:['enemy_charger','enemy_sniper','wing_a'] },
+    orbiter:  { hp:34,  spd:8.2,  r:1.05, dmg:7,  xp:2, color:CFG.colors.orbiter,  ai:'orbit', variants:['enemy_orbiter','wing_b'] },
+    sniper:   { hp:26,  spd:6.4,  r:1.00, dmg:12, xp:3, color:CFG.colors.sniper,   ai:'snipe', variants:['enemy_sniper','enemy_charger'] },
+    splitter: { hp:40,  spd:7.4,  r:1.10, dmg:8,  xp:3, color:CFG.colors.splitter, ai:'chase', variants:['enemy_splitter','enemy_orbiter'] },
+    brute:    { hp:150, spd:5.0,  r:1.75, dmg:20, xp:8, color:CFG.colors.brute,    ai:'chase', variants:['enemy_brute','enemy_charger'] },
+    kamikaze: { hp:16,  spd:16,   r:0.8,  dmg:16, xp:2, color:0xff5a3c,            ai:'rush',   variants:['enemy_charger','enemy_sniper'] },
+    turret:   { hp:60,  spd:0,    r:1.10, dmg:10, xp:3, color:0xffa02e,            ai:'turret', variants:['enemy_sniper','enemy_orbiter'] },
+    wasp:     { hp:14,  spd:13,   r:0.7,  dmg:7,  xp:1, color:0xff8a3c,            ai:'chase', variants:['wasp'] },
+    mender:   { hp:50,  spd:7,    r:1.0,  dmg:6,  xp:5, color:0x6dff8b,            ai:'support', variants:['mender'] },
+    phaser:   { hp:30,  spd:7.5,  r:0.9,  dmg:11, xp:3, color:0xc77dff,            ai:'blink', variants:['phaser'] },
+    bomber:   { hp:28,  spd:7.5,  r:0.95, dmg:14, xp:3, color:0xff4422,            ai:'bomber', variants:['enemy_charger','enemy_brute'] },
+    weaver:   { hp:30,  spd:9.5,  r:0.9,  dmg:9,  xp:3, color:0x9d6bff,            ai:'weave',  variants:['phaser','enemy_sniper'] },
+  },
+
+  /* 变异：按波次概率触发，变异直接染敌体发光（不再用地面光环，避免遮挡辨识度）
+     重甲/疾速/再生/狂暴/腐蚀/裂变 —— 让 24 把武器在更长局内遇到更多样威胁 */
+  MUT: {
+    armored: { name:'重甲', color:0x9fb4c8, hp:1.6,  spd:0.85 },
+    swift:   { name:'疾速', color:0x4dd2ff, hp:0.9,  spd:1.45 },
+    regen:   { name:'再生', color:0x6dff8b, hp:1.15 },
+    berserk: { name:'狂暴', color:0xff4d4d, hp:1.1  },
+    toxic:   { name:'腐蚀', color:0x8dff5a, hp:1.1  },
+    split:   { name:'裂变', color:0xffa02e, hp:1.0  },
+  },
+  MUT_KEYS: ['armored','swift','regen','berserk','toxic','split'],
+
+  _rollMut(allow, elite){
+    if (!allow) return '';
+    const w = (typeof Game !== 'undefined' && Game.wave) ? Game.wave : 1;
+    if (w < 4) return '';
+    if (elite) return Util.pick(this.MUT_KEYS);
+    const chance = Util.clamp((w - 4) * 0.03 * (Game.hell ? 2.4 : 1), 0, 0.85);
+    return Math.random() < chance ? Util.pick(this.MUT_KEYS) : '';
+  },
+
+  init(){
+    this.group = new THREE.Group();          // 保留容器，便于整体管理（实例本体直挂 scene）
+    World.scene.add(this.group);
+    this._pid = 0;
+    this.pool = Pool.create(300, () => ({
+      x:0, z:0, vx:0, vz:0, yaw:0,
+      hp:0, maxHp:0, r:1, spd:0, dmg:0, xp:1, ai:'chase',
+      t:0, fireCd:0, phase:0, hitT:0, slowT:0, slowK:0, elite:false, scale:1,
+      blinkCd:0, healCd:0,
+      kind:null, modelKey:null, color:0xffffff,
+      alive:false, _pi:0, _ai:0,
+      mut:'', mutT:0, raging:false, spdMul:1, dmgMul:1,
+    }));
+    // —— 每 variant 模型一个 InstancedMesh：1 变体 = 1 draw call（原多部件 Group 至多 ~4 draw call）——
+    this._m = new THREE.Matrix4(); this._q = new THREE.Quaternion();
+    this._e = new THREE.Euler(); this._p = new THREE.Vector3();
+    this._s = new THREE.Vector3(1, 1, 1); this._c = new THREE.Color();
+    this._WHITE = new THREE.Color(0xffffff);
+    this._FROST = new THREE.Color(0x8fe3ff);
+    this._mc = new THREE.Color();   // 变异染色临时色
+    this._insts = {}; this._outline = {}; this._warned = {};
+    this._defaultGeo = new THREE.IcosahedronGeometry(0.7, 0);
+    const vset = new Set();
+    for (const K in this.SPEC) for (const v of this.SPEC[K].variants) vset.add(v);
+    vset.add('__default');
+    const outlineMat = new THREE.MeshBasicMaterial({ color: 0x05070d, side: THREE.BackSide });  // 反向外壳描边（cel 风）
+    // 纯色材质：MeshBasicMaterial + instanceColor —— 兵种本色直接显示，暗场景下也清晰可辨（用户要求"纯色"）
+    const bodyMat = () => new THREE.MeshBasicMaterial({ color: 0xffffff });
+    for (const vk of vset){
+      const geo = vk === '__default' ? this._defaultGeo : (Gfx.enemyBodyGeo(vk) || this._defaultGeo);
+      if (vk !== '__default' && geo === this._defaultGeo && !this._warned[vk]){
+        this._warned[vk] = 1; console.warn('[Enemies] Missing enemy geo, fallback icosa: ' + vk);
+      }
+      const inst = new THREE.InstancedMesh(geo, bodyMat(), 300);
+      inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      inst.frustumCulled = false;
+      inst.count = 0;
+      inst.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(300 * 3), 3);
+      World.scene.add(inst);
+      this._insts[vk] = inst;
+      // 描边壳：复用同几何，BackSide + 偏大 6%，仅作纯黑轮廓（实例化后丢失的 cel 描边回归）
+      const oinst = new THREE.InstancedMesh(geo, outlineMat, 300);
+      oinst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      oinst.frustumCulled = false;
+      oinst.count = 0;
+      oinst.renderOrder = -1;
+      World.scene.add(oinst);
+      this._outline[vk] = oinst;
+    }
+  },
+
+  /**
+   * @param kind   种类
+   * @param hpMul  血量倍率
+   * @param spdMul 速度倍率
+   * @param scale  体型
+   * @param elite  精英
+   */
+  spawn(kind, x, z, hpMul, spdMul, scale, elite, tint, allowMut){
+    const S = this.SPEC[kind] || this.SPEC.charger;
+    if (tint != null) this._curTint = tint;
+    const e = this.pool.get();
+    if (!e) return null;
+    e._pi = ++this._pid;          // 唯一实例 id（供链电/激光/飞锯去重命中）
+    e.kind = kind; e.ai = S.ai;
+    e.x = x; e.z = z; e.vx = 0; e.vz = 0;
+    e.scale = (scale || 1) * (elite ? 1.5 : 1);
+    e.r = S.r * e.scale;
+    e.maxHp = S.hp * (hpMul == null ? 1 : hpMul) * (elite ? 4.2 : 1);
+    e.hp = e.maxHp;
+    e.spd = S.spd * (spdMul == null ? 1 : spdMul) * (elite ? 0.82 : 1);
+    e.dmg = S.dmg * (elite ? 1.6 : 1);
+    e.xp = S.xp * (elite ? 7 : 1);
+    e.elite = !!elite;
+    // 变异：默认允许（普通刷怪），分裂子代/召唤传 false 防递归
+    const mut = this._rollMut(allowMut !== false, e.elite);
+    e.mut = mut; e.mutT = 0; e.raging = false; e.spdMul = 1; e.dmgMul = 1;
+    if (mut){
+      const M = this.MUT[mut];
+      e.maxHp = Math.max(1, Math.round(e.maxHp * (M.hp || 1)));
+      e.hp = e.maxHp;
+      e.spdMul *= (M.spd || 1);
+    }
+    e.t = Math.random() * 10; e.fireCd = Util.rand(0.6, 2.2);
+    e.blinkCd = Util.rand(1.4, 3.0) + (e.ai === 'blink' ? 1 : 0);
+    e.healCd  = Util.rand(1.5, 3.0) + (e.ai === 'support' ? 1 : 0);
+    e.hitT = 0; e.slowT = 0; e.slowK = 0; e.frostLv = 0; e.frostT = 0;
+    e.yaw = Math.atan2(Player.x - x, Player.z - z);
+
+    // 机型多样化：从本种类的机型池里随机抽一个（颜色仍按种类，保证威胁辨识度）
+    const mk = S.variants[Math.floor(Math.random() * S.variants.length)];
+    e.modelKey = mk;
+    const col = elite ? 0xffe0a0 : S.color;   // 精英暖金；常规敌人按「兵种本色」S.color（不同兵种不同颜色，星域染色不再覆盖敌体，氛围交给背景/雾）
+    e.color = col;
+    if (elite){
+      FX.ring(x, z, 0xffcc33, 4 * e.scale, 0.5);
+      World.shake(0.6, 0.2);
+    }
+    return e;
+  },
+
+  /** 半径查询（先空间哈希，再精确距离） */
+  queryHit(x, z, r){
+    const cand = Grid.query(x, z, r + 2.2);
+    const out = [];
+    for (let i = 0; i < cand.length; i++){
+      const e = cand[i];
+      if (!e.alive) continue;
+      const rr = r + e.r;
+      if (Util.dist2(x, z, e.x, e.z) <= rr * rr) out.push(e);
+    }
+    return out;
+  },
+
+  damage(e, dmg, crit, hx, hz, fx){
+    if (!e.alive) return;
+    let actual = dmg * Synergy.mods.dmg;
+    if (e.frostLv > 0 && e.frostT > 0) actual *= 1.5;   // 冷冻射线：冻结期受伤加成
+    e.hp -= actual;
+    e.hitT = Math.max(e.hitT, 0.1);
+    Game.dmgDealt += actual;
+    if (fx !== false){            // fx=false 时走静默路径（黑洞/牵引/相阵等持续 DOT，避免刷屏）
+      FX.dmgText(hx == null ? e.x : hx, hz == null ? e.z : hz, actual, crit);
+      FX.hitSpark(e.x, e.z, e.color || this.SPEC[e.kind].color, 0.8);
+      const kb = 5.5 / e.scale;        // 轻微击退（体型越大越稳）
+      const a = Math.atan2(e.x - Player.x, e.z - Player.z);
+      e.vx += Math.sin(a) * kb; e.vz += Math.cos(a) * kb;
+      if (e.hp <= 0) this.kill(e);
+      else Audio2.hit();
+    } else if (e.hp <= 0) this.kill(e);
+  },
+
+  splash(x, z, r, dmg, crit){
+    if (!r) return;
+    const hits = this.queryHit(x, z, r);
+    for (const e of hits){
+      const d = Math.hypot(e.x - x, e.z - z);
+      const f = Util.clamp(1 - d / (r + e.r), 0.35, 1);
+      this.damage(e, dmg * f, crit, e.x, e.z);
+    }
+  },
+
+  kill(e){
+    // 立刻下线，避免「溅射打到正在死的自己 / 旁边的重甲」造成 kill→splash→kill 死循环
+    if (!e.alive) return;
+    e.alive = false;
+    const S = this.SPEC[e.kind];
+    FX.explode(e.x, e.z, e.color || S.color, e.elite ? 1.9 : (0.7 + e.scale * 0.4));
+    Audio2.kill();
+    if (e.elite) World.shake(0.9, 0.26);
+    Game.kills++;
+
+    // 掉经验
+    const v = e.xp;
+    if (v >= 8)      Loot.dropGem(e.x, e.z, 20);
+    else if (v >= 3) Loot.dropGem(e.x, e.z, 5);
+    else             Loot.dropGem(e.x, e.z, 1);
+    if (e.elite){
+      for (let i = 0; i < 4; i++)
+        Loot.dropGem(e.x + Util.rand(-2, 2), e.z + Util.rand(-2, 2), 20);
+    }
+    // 小概率掉修复包
+    if (Math.random() < (e.elite ? 0.55 : 0.017)) Loot.dropHeal(e.x, e.z);
+
+    // 分裂（敌种机制）
+    if (e.kind === 'splitter' && e.scale > 0.55){
+      for (let i = 0; i < 2; i++){
+        const a = Math.random() * Util.TAU;
+        const c = this.spawn('charger', e.x + Math.cos(a) * 1.4, e.z + Math.sin(a) * 1.4,
+          Math.max(0.4, e.maxHp / this.SPEC.charger.hp * 0.30), 1.25, e.scale * 0.62, false, this._curTint, false);
+        if (c){ c.vx = Math.cos(a) * 14; c.vz = Math.sin(a) * 14; }
+      }
+    }
+    // 死亡爆裂：进队列，下一帧迭代结算，杜绝连锁递归（brute / bomber 各自参数）
+    if (e.kind === 'brute'){
+      FX.ring(e.x, e.z, 0xff7a2f, 9, 0.5);
+      this.blastQ.push(e.x, e.z, 6.5, 26);
+      if (Util.dist2(e.x, e.z, Player.x, Player.z) < 42) Player.takeDamage(10);
+    } else if (e.kind === 'bomber'){
+      const r = 5.5 * e.scale, d = 20 * e.scale;
+      FX.ring(e.x, e.z, 0xff4422, r, 0.5);
+      FX.explode(e.x, e.z, 0xff6633, 1.6);
+      this.blastQ.push(e.x, e.z, r, d);
+      World.shake(0.8, 0.25);
+    }
+    // 裂变变异：死亡裂出 2 只小型追击者（仅一代，scale 守卫防递归）
+    if (e.mut === 'split' && e.scale > 0.5){
+      for (let i = 0; i < 2; i++){
+        const a = Math.random() * Util.TAU;
+        const c = this.spawn('charger', e.x + Math.cos(a) * 1.3, e.z + Math.sin(a) * 1.3,
+          Math.max(0.4, e.maxHp / this.SPEC.charger.hp * 0.30), 1.2, e.scale * 0.6, false, this._curTint, false);
+        if (c){ c.vx = Math.cos(a) * 12; c.vz = Math.sin(a) * 12; }
+      }
+    }
+
+    this.pool.release(e);
+  },
+
+  update(dt){
+    // 重建空间哈希
+    Grid.clear();
+    const list = this.pool.active;
+    for (let i = 0; i < list.length; i++) Grid.insert(list[i]);
+
+    // 结算死亡爆裂：迭代而非递归，并设上限防止极端情况刷屏（队列存 [x,z,r,dmg]）
+    let guard = 0;
+    while (this.blastQ.length >= 4 && guard++ < 64){
+      const dmg = this.blastQ.pop(), r = this.blastQ.pop(),
+            bz = this.blastQ.pop(), bx = this.blastQ.pop();
+      this.splash(bx, bz, r, dmg, false);
+    }
+    if (this.blastQ.length) this.blastQ.length = 0;
+
+    const px = Player.x, pz = Player.z;
+
+    this.pool.each(e => {
+      e.t += dt;
+      if (e.hitT > 0) e.hitT -= dt;
+      let sk = 1;
+      if (e.slowT > 0){ e.slowT -= dt; sk = 1 - e.slowK; }
+
+      /* ---- 变异持续效果 ---- */
+      if (e.mut === 'regen' && e.hp < e.maxHp){
+        e.hp = Math.min(e.maxHp, e.hp + 6 * dt);
+        e.mutT += dt;
+        if (e.mutT > 1.2){ e.mutT = 0; FX.ring(e.x, e.z, 0x6dff8b, e.r * 2.4, 0.3); }
+      }
+      if (e.mut === 'berserk'){
+        const rage = e.hp / e.maxHp < 0.35;
+        if (rage !== e.raging){
+          e.raging = rage;
+          if (rage) FX.ring(e.x, e.z, 0xff4d4d, e.r * 2.6, 0.4);
+        }
+      }
+
+      const dx = px - e.x, dz = pz - e.z;
+      const dist = Math.hypot(dx, dz) || 1;
+      const toP = Math.atan2(dx, dz);
+      let ax = 0, az = 0;
+
+      /* ---- AI ---- */
+      if (e.ai === 'chase'){
+        ax = dx / dist; az = dz / dist;
+      } else if (e.ai === 'rush'){
+        // 自杀冲锋：全速扑向玩家，不考虑分离
+        ax = dx / dist; az = dz / dist;
+      } else if (e.ai === 'turret'){
+        // 固定炮台：原地不动，缓慢转向并周期射击
+        ax = 0; az = 0;
+        e.yaw = Math.atan2(dx, dz);
+        e.fireCd -= dt;
+        if (e.fireCd <= 0 && dist < 40 && Game.state === 'PLAYING'){
+          e.fireCd = Util.rand(1.4, 2.2);
+          Bullets.enemyFire(e.x, e.z, Math.atan2(dx, dz), 26, e.dmg * (e.dmgMul || 1) * (e.mut === 'berserk' && e.raging ? 1.8 : 1),
+            { color: 0xffc04d, scale: 0.8, life: 4 });
+          FX.burst(e.x, e.z, 0xffc04d, 4, 3, 0.9);
+        }
+      } else if (e.ai === 'orbit'){
+        // 保持 11 单位环绕，并周期开火
+        const want = 11;
+        const radial = (dist - want) / want;
+        const tang = 1;
+        ax = (dx / dist) * radial * 1.8 - (dz / dist) * tang;
+        az = (dz / dist) * radial * 1.8 + (dx / dist) * tang;
+        const l = Math.hypot(ax, az) || 1; ax /= l; az /= l;
+        e.fireCd -= dt;
+        if (e.fireCd <= 0 && dist < 26 && Game.state === 'PLAYING'){
+          e.fireCd = Util.rand(1.6, 2.6);
+          Bullets.enemyFire(e.x, e.z, toP, 22, e.dmg * (e.dmgMul || 1) * (e.mut === 'berserk' && e.raging ? 1.8 : 1), { color: 0xb980ff, scale: 0.9 });
+        }
+      } else if (e.ai === 'snipe'){
+        // 远则靠近，近则后撤；停稳后打高速弹
+        const want = 19;
+        const k = dist > want + 3 ? 1 : (dist < want - 4 ? -1 : 0);
+        ax = (dx / dist) * k; az = (dz / dist) * k;
+        e.fireCd -= dt;
+        if (e.fireCd <= 0 && dist < 34 && Game.state === 'PLAYING'){
+          e.fireCd = Util.rand(2.2, 3.4);
+          // 预判玩家速度
+          const lead = dist / 40;
+          const tx = px + Player.vx * lead, tz = pz + Player.vz * lead;
+          const a = Math.atan2(tx - e.x, tz - e.z);
+          Bullets.enemyFire(e.x, e.z, a, 40, e.dmg * (e.dmgMul || 1) * (e.mut === 'berserk' && e.raging ? 1.8 : 1), { color: 0x4dd2ff, scale: 0.75, life: 3 });
+          FX.burst(e.x, e.z, 0x4dd2ff, 4, 3, 0.9);
+        }
+      } else if (e.ai === 'support'){
+        // 治愈者：与玩家保持距离（优先保命），周期治疗附近受伤友军
+        const want = 15;
+        const k = dist > want + 3 ? 1 : (dist < want - 4 ? -1 : 0);
+        ax = (dx / dist) * k; az = (dz / dist) * k;
+        e.healCd -= dt;
+        if (e.healCd <= 0 && Game.state === 'PLAYING'){
+          e.healCd = 3.0;
+          const heal = 14, rad = 11;
+          const near = Grid.query(e.x, e.z, rad);
+          let any = false;
+          for (let i = 0; i < near.length; i++){
+            const o = near[i];
+            if (o === e || !o.alive || o.hp >= o.maxHp) continue;
+            o.hp = Math.min(o.maxHp, o.hp + heal);
+            o.hitT = Math.max(o.hitT, 0.10);   // 轻微亮闪提示（颜色仍按种类，避免永久染色）
+            any = true;
+          }
+          if (any){ FX.ring(e.x, e.z, 0x6dff8b, rad, 0.45); FX.ring(e.x, e.z, 0x9dff7a, rad * 0.6, 0.3); }
+        }
+      } else if (e.ai === 'blink'){
+        // 折跃者：平时缓慢逼近，冷却一到就朝玩家瞬移一段，制造追踪压力
+        ax = dx / dist * 0.5; az = dz / dist * 0.5;
+        e.blinkCd -= dt;
+        if (e.blinkCd <= 0 && dist > 6 && Game.state === 'PLAYING'){
+          e.blinkCd = Util.rand(2.4, 3.6);
+          const step = Math.min(9, dist - 3);
+          const bx = e.x + (dx / dist) * step, bz = e.z + (dz / dist) * step;
+          if (Math.hypot(bx, bz) < CFG.arena - 1){
+            FX.ring(e.x, e.z, 0xc77dff, 2.2, 0.4);
+            e.x = bx; e.z = bz;
+            e.vx = 0; e.vz = 0;
+            FX.ring(e.x, e.z, 0xc77dff, 2.2, 0.4);
+            FX.burst(e.x, e.z, 0xc77dff, 6, 3, 1.1);
+          }
+        }
+      } else if (e.ai === 'bomber'){
+        // 爆裂体：蓄势逼近（越近越快），接触或死亡都会炸（kill 走 blastQ）
+        const accel = Util.clamp(1 + (20 - dist) * 0.04, 1, 2.1);
+        ax = (dx / dist) * accel; az = (dz / dist) * accel;
+        e.mutT += dt;   // 脉冲计时（视觉可扩展）
+      } else if (e.ai === 'weave'){
+        // 相位编织者：保持中距环绕走位 + 三连爆发，机动难瞄
+        const want = 14;
+        const radial = (dist - want) / want;
+        ax = (dx / dist) * radial * 1.6 - (dz / dist) * 1.0;
+        az = (dz / dist) * radial * 1.6 + (dx / dist) * 1.0;
+        const l = Math.hypot(ax, az) || 1; ax /= l; az /= l;
+        e.fireCd -= dt;
+        if (e.fireCd <= 0 && dist < 30 && Game.state === 'PLAYING'){
+          e.fireCd = Util.rand(1.8, 2.8);
+          const base = Math.atan2(dx, dz);
+          const ed = e.dmg * (e.dmgMul || 1) * (e.mut === 'berserk' && e.raging ? 1.8 : 1);
+          for (let b = 0; b < 3; b++){
+            const a = base + (b - 1) * 0.14;
+            Bullets.enemyFire(e.x, e.z, a, 30, ed, { color: 0x9d6bff, scale: 0.8, life: 3 });
+          }
+          FX.burst(e.x, e.z, 0x9d6bff, 5, 3, 0.9);
+        }
+      }
+
+      /* ---- 敌我分离：防止叠成一坨（炮台固定不动，跳过）---- */
+      if (e.ai !== 'turret'){
+        const near = Grid.query(e.x, e.z, e.r * 2.4);
+        let sx = 0, sz = 0;
+        for (let i = 0; i < near.length; i++){
+          const o = near[i];
+          if (o === e || !o.alive) continue;
+          const ddx = e.x - o.x, ddz = e.z - o.z;
+          const d2 = ddx*ddx + ddz*ddz;
+          const rr = (e.r + o.r) * 0.92;
+          if (d2 < rr * rr && d2 > 0.0001){
+            const d = Math.sqrt(d2);
+            sx += ddx / d * (1 - d / rr);
+            sz += ddz / d * (1 - d / rr);
+          }
+        }
+        ax += sx * 1.7; az += sz * 1.7;
+      }
+
+      // 躲避陨石：像怕一样绕开，避免穿模
+      {
+        const aa = Asteroids.pool.active;
+        for (let j = 0; j < aa.length; j++){
+          const o = aa[j]; if (!o.alive) continue;
+          const adx = e.x - o.x, adz = e.z - o.z;
+          const ad2 = adx*adx + adz*adz;
+          const ar = e.r + o.r + 1.8;
+          if (ad2 < ar*ar && ad2 > 0.001){
+            const d = Math.sqrt(ad2);
+            const f = (1 - d / ar) * 2.4;
+            ax += adx / d * f; az += adz / d * f;
+          }
+        }
+      }
+
+      const sp = e.spd * (e.spdMul || 1) * (e.mut === 'berserk' && e.raging ? 1.25 : 1) * sk;
+      const k = 1 - Math.exp(-7 * dt);
+      e.vx += (ax * sp - e.vx) * k;
+      e.vz += (az * sp - e.vz) * k;
+      e.x += e.vx * dt; e.z += e.vz * dt;
+      Util.clampArena(e, e.r);
+      // 硬解算：绝不嵌入陨石（推出 + 抵消指向岩石的速度分量）
+      {
+        const ao = Asteroids.hitTest(e.x, e.z, e.r * 0.9);
+        if (ao){
+          const adx = e.x - ao.x, adz = e.z - ao.z;
+          const d = Math.hypot(adx, adz) || 0.001;
+          const need = (e.r * 0.9 + ao.r) - d;
+          if (need > 0){ e.x += adx / d * need; e.z += adz / d * need; }
+          const nx = adx / d, nz = adz / d;
+          const vn = e.vx * nx + e.vz * nz;
+          if (vn < 0){ e.vx -= vn * nx; e.vz -= vn * nz; }
+        }
+      }
+
+      /* ---- 撞击玩家 ---- */
+      const pr = CFG.player.radius + e.r;
+      if (dist < pr && Game.state === 'PLAYING'){
+        const dmg = e.dmg * (e.dmgMul || 1) * (e.mut === 'berserk' && e.raging ? 1.8 : 1);
+        if (e.kind === 'kamikaze'){
+          // 自杀冲锋：撞上即引爆，自身摧毁
+          Player.takeDamage(dmg);
+          FX.explode(e.x, e.z, 0xff5a3c, 1.4);
+          World.shake(1.2, 0.3);
+          this.kill(e);
+        } else if (e.kind === 'bomber'){
+          // 爆裂体：接触即引爆
+          Player.takeDamage(dmg);
+          FX.explode(e.x, e.z, 0xff4422, 1.6);
+          World.shake(1.0, 0.28);
+          this.kill(e);          // kill 里走 blastQ 做范围爆裂
+        } else {
+          Player.takeDamage(dmg);
+          const a = Math.atan2(e.x - px, e.z - pz);
+          e.vx = Math.sin(a) * 16; e.vz = Math.cos(a) * 16;
+        }
+        if (e.mut === 'toxic') Player.applyPoison(3, 2.5);
+      }
+
+      /* ---- 表现（位置/朝向/受击闪白统一留到 _flush 写 InstancedMesh 矩阵与 instanceColor）---- */
+      if (e.frostT > 0) e.frostT -= dt;
+      e.yaw = Util.angLerp(e.yaw, Math.atan2(e.vx, e.vz) || e.yaw, 1 - Math.exp(-8 * dt));
+      return false;
+    });
+    this._flush();
+  },
+
+  /** 把活跃敌人按 modelKey 分桶写入各自的 InstancedMesh（矩阵 + instanceColor） */
+  _flush(){
+    for (const k in this._insts){ this._insts[k].count = 0; this._outline[k].count = 0; }
+    const list = this.pool.active;
+    for (let i = 0; i < list.length; i++){
+      const e = list[i];
+      const inst = this._insts[e.modelKey] || this._insts.__default;
+      if (!inst) continue;
+      const idx = inst.count++;
+      const spin = (e.kind === 'orbiter' || e.kind === 'splitter');
+      const ry = spin ? e.t * 1.6 : e.yaw;
+      const hf = e.hitT > 0 ? e.hitT / 0.1 : 0;
+      const bob = 0.65 * e.scale + Math.sin(e.t * 3 + e.x) * 0.08;
+      this._p.set(e.x, bob, e.z);
+      this._q.setFromEuler(this._e.set(0, ry, 0));
+      const sc = e.scale * (hf > 0 ? 1 + hf * 0.13 : 1);
+      this._s.setScalar(sc);
+      this._m.compose(this._p, this._q, this._s);
+      inst.setMatrixAt(idx, this._m);
+      if (hf > 0) this._c.setHex(e.color).lerp(this._WHITE, hf * 0.85);
+      else if (e.frostT > 0) this._c.setHex(e.color).lerp(this._FROST, Math.min(0.85, 0.4 + e.frostLv / 3 * 0.5));
+      else this._c.setHex(e.color);
+      if (e.mut) this._c.lerp(this._mc.setHex(this.MUT[e.mut].color), 0.5);   // 变异直接染敌体发光，去除地面光环
+      inst.instanceColor.setXYZ(idx, this._c.r, this._c.g, this._c.b);
+      // 反向外壳描边（纯黑 BackSide，偏大 6%）
+      const oinst = this._outline[e.modelKey] || this._outline.__default;
+      if (oinst){
+        this._s.setScalar(sc * 1.06);
+        this._m.compose(this._p, this._q, this._s);
+        oinst.setMatrixAt(oinst.count++, this._m);
+      }
+    }
+    for (const k in this._insts){
+      const inst = this._insts[k];
+      if (inst.count > 0){
+        inst.instanceMatrix.needsUpdate = true;
+        if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
+      }
+      const oinst = this._outline[k];
+      if (oinst && oinst.count > 0) oinst.instanceMatrix.needsUpdate = true;
+    }
+  },
+
+  clear(){
+    this.blastQ.length = 0;
+    this.pool.releaseAll();
+    for (const k in this._insts) this._insts[k].count = 0;
+  },
+};
+
+/* ============================ Loot 掉落（InstancedMesh + 磁吸） ============================ */
+const Loot = {
+  inst: null, pool: null,
+  _m: new THREE.Matrix4(), _q: new THREE.Quaternion(),
+  _p: new THREE.Vector3(), _s: new THREE.Vector3(1, 1, 1), _c: new THREE.Color(),
+  _ax: new THREE.Vector3(0, 1, 0),
+
+  init(){
+    const geo = new THREE.OctahedronGeometry(0.34, 0);
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffffff });   // 颜色由 instanceColor 驱动
+    this.inst = new THREE.InstancedMesh(geo, mat, 400);
+    this.inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.inst.frustumCulled = false;
+    this.inst.renderOrder = 5;
+    this.inst.count = 0;
+    this.inst.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(400 * 3), 3);
+    World.scene.add(this.inst);
+    this.pool = Pool.create(400, () => ({
+      x:0, z:0, y:0.55, vx:0, vz:0, val:1, kind:'xp', t:0, mag:false,
+      _sc:0.85, _color:0x38f0ff, alive:false,
+    }));
+  },
+
+  _put(x, z, val, kind, color, scale){
+    const o = this.pool.get(); if (!o) return null;
+    o.x = x; o.z = z; o.y = 0.55; o.val = val; o.kind = kind;
+    o.t = Math.random() * 6; o.mag = false; o._sc = scale; o._color = color;
+    const a = Math.random() * Util.TAU, sp = Util.rand(2, 6);
+    o.vx = Math.cos(a) * sp; o.vz = Math.sin(a) * sp;
+    return o;
+  },
+
+  dropGem(x, z, val){
+    const c = val >= 20 ? 0xb980ff : (val >= 5 ? 0x5dff9b : 0x38f0ff);
+    const s = val >= 20 ? 1.5 : (val >= 5 ? 1.15 : 0.85);
+    return this._put(x, z, val, 'xp', c, s);
+  },
+
+  dropHeal(x, z){ return this._put(x, z, 25, 'hp', 0xff3d7f, 1.35); },
+
+  update(dt){
+    const pr = Player.pickR, pr2 = pr * pr;
+    this.pool.each(o => {
+      o.t += dt;
+      const k = Math.exp(-5 * dt); o.vx *= k; o.vz *= k;
+      o.x += o.vx * dt; o.z += o.vz * dt;
+      const d2 = Util.dist2(o.x, o.z, Player.x, Player.z);
+      if (o.mag || d2 < pr2){
+        o.mag = true;
+        const d = Math.sqrt(d2) || 1;
+        const sp = CFG.magnetSpd * Util.clamp(1.4 - d / 22, 0.55, 1.6);
+        o.x += (Player.x - o.x) / d * sp * dt;
+        o.z += (Player.z - o.z) / d * sp * dt;
+        if (d < 1.3){
+          if (o.kind === 'hp'){ Player.heal(o.val); Audio2.gem(); }
+          else { Progress.gainExp(o.val); Audio2.gem(); }
+          FX.particle(o.x, 0.8, o.z, o.kind === 'hp' ? 0xff3d7f : 0x9df6ff,
+            { life: 0.3, s0: 0.55, s1: 0, drag: 4 });
+          return true;
+        }
+      }
+      return false;
+    });
+    // 写矩阵 + 实例色
+    const a = this.pool.active, n = a.length;
+    for (let i = 0; i < n; i++){
+      const o = a[i];
+      const bob = 0.55 + Math.sin(o.t * 3.4) * 0.16;
+      this._p.set(o.x, bob, o.z);
+      this._q.setFromAxisAngle(this._ax, o.t * 2.1);
+      this._s.set(o._sc, o._sc, o._sc);
+      this._m.compose(this._p, this._q, this._s);
+      this.inst.setMatrixAt(i, this._m);
+      this._c.setHex(o._color);
+      this.inst.instanceColor.setXYZ(i, this._c.r, this._c.g, this._c.b);
+    }
+    this.inst.count = n;
+    if (n > 0){
+      this.inst.instanceMatrix.needsUpdate = true;
+      this.inst.instanceColor.needsUpdate = true;
+    }
+  },
+
+  /** 全屏吸取（升级奖励用） */
+  magnetAll(){ for (const o of this.pool.active) o.mag = true; },
+
+  clear(){ this.pool.releaseAll(); this.inst.count = 0; },
+};
+
+/* ==================== p7_boss.js ==================== */
+
+/* ============================ Boss 深渊母舰 ============================ */
+const Boss = {
+  active: false, entering: false, phase: 1,
+  hp: 0, maxHp: 8600,
+  x: 0, z: -34, t: 0, yaw: 0,
+  g: null, ud: null,
+  atkCd: 0, spinCd: 0, summonCd: 0, chargeT: 0, chargeCd: 0,
+  _target: { x: 0, z: 0, r: 5.2, alive: true },
+  r: 5.2,
+
+  init(){
+    this.g = Gfx.boss();
+    this.ud = this.g.userData;
+    this.g.visible = false;
+    World.scene.add(this.g);
+  },
+
+  spawn(round){
+    this.active = true; this.entering = true;
+    this.phase = 1;
+    this.round = round || 0;
+    this.maxHp = Math.round(8600 * (1 + 0.45 * this.round) * Game.hpMulAt(Game.wave || 1));   // 无尽轮次强化 + 同难度曲线
+    this.hp = this.maxHp;
+    this.x = 0; this.z = Player.z - 46;
+    this.t = 0; this.yaw = 0;
+    this.atkCd = 2.4; this.spinCd = 5; this.summonCd = 6; this.chargeCd = 9; this.chargeT = 0;
+    this.g.visible = true;
+    this.g.position.set(this.x, 5.5, this.z);
+    this.g.scale.setScalar(0.15);
+    HUD.showBoss(true);
+    HUD.toast('深渊母舰 NYX-Ω', 'WARNING · 歼灭目标', '#ff3d7f', 2.6);
+    Audio2.bossWarn();
+    World.shake(2.2, 0.9);
+    return this;
+  },
+
+  asTarget(){
+    this._target.x = this.x; this._target.z = this.z;
+    this._target.alive = this.active;
+    this._target.r = this.r;
+    return this._target;
+  },
+
+  hitTest(x, z, r){
+    if (!this.active || this.entering) return false;
+    const rr = r + this.r;
+    return Util.dist2(x, z, this.x, this.z) <= rr * rr;
+  },
+
+  damage(n, crit, hx, hz){
+    if (!this.active || this.entering) return;
+    this.hp -= n * Synergy.mods.dmg;
+    Game.dmgDealt += n;
+    FX.dmgText(hx == null ? this.x : hx, hz == null ? this.z : hz, n, !!crit);
+    if (Math.random() < 0.35) FX.burst(
+      hx == null ? this.x : hx, hz == null ? this.z : hz, 0xffffff, 3, 4, 2);
+    this.ud.core.traverse(c => { if (c.isMesh) c.material.color.setHex(0xffffff); });
+    if (this.hp <= 0){ this.hp = 0; this.die(); }
+  },
+
+  die(){
+    this.active = false;
+    HUD.showBoss(false);
+    Audio2.boom();
+    World.shake(4.5, 1.4);
+    // 连锁爆炸继续在结算面板后面播，不阻塞结算流程
+    for (let i = 0; i < 10; i++){
+      setTimeout(() => {
+        if (!this.g) return;
+        const a = Math.random() * Util.TAU, r = Util.rand(0, 8);
+        FX.explode(this.x + Math.cos(a) * r, this.z + Math.sin(a) * r, 0xff3d7f, 2.2);
+        Audio2.boom();
+      }, i * 90);
+    }
+    for (let i = 0; i < 26; i++)
+      Loot.dropGem(this.x + Util.rand(-8, 8), this.z + Util.rand(-8, 8), 20);
+    this.g.visible = false;
+    if (Game.endless){
+      // 无尽模式：击破后进入更高难度的下一轮 BOSS，而非结束（修复 BOSS 链断裂）
+      HUD.toast('深渊母舰已歼灭', 'WARNING · 下一轮来袭', '#ff3d7f', 2.2);
+      setTimeout(() => { if (Game.state === 'PLAYING') Game.nextBossRound(); }, 200);
+    } else {
+      setTimeout(() => { if (Game.state === 'PLAYING') Game.over(true); }, 200);
+    }
+  },
+
+  update(dt){
+    if (!this.active) return;
+    this.t += dt;
+
+    /* ---- 进场演出：从远处缩放降落 ---- */
+    if (this.entering){
+      const k = Util.clamp(this.t / 2.6, 0, 1);
+      const e = 1 - Math.pow(1 - k, 3);
+      this.g.scale.setScalar(0.6 + e * 0.6);
+      this.g.position.set(
+        Util.lerp(this.x, Player.x, e * 0.55),
+        Util.lerp(14, 4.6, e),
+        Util.lerp(Player.z - 46, Player.z - 24, e));
+      this.z = this.g.position.z; this.x = this.g.position.x;
+      this.g.rotation.y += dt * 3.4 * (1 - e * 0.7);
+      if (k >= 1){
+        this.entering = false;
+        FX.ring(this.x, this.z, 0xff3d7f, 26, 0.8);
+        World.shake(3, 0.7);
+        Audio2.boom();
+      }
+      return;
+    }
+
+    /* ---- 阶段切换 ---- */
+    if (this.phase === 1 && this.hp / this.maxHp <= 0.5){
+      this.phase = 2;
+      HUD.toast('阶段 II · 狂暴', 'NYX-Ω 核心过载', '#ffcc33', 2);
+      Audio2.bossWarn();
+      World.shake(2.6, 0.8);
+      FX.ring(this.x, this.z, 0xffcc33, 30, 0.9);
+      this.ud.hull.traverse(c => { if (c.isMesh && c.material.emissive) c.material.emissive.setHex(0xffcc33); });
+      this.atkCd = 0.6;
+    }
+    const P2 = this.phase === 2;
+
+    /* ---- 移动：缓慢逼近玩家，保持 17 距离 ---- */
+    if (this.chargeT > 0){
+      this.chargeT -= dt;
+      const a = this.yaw;
+      this.x += Math.sin(a) * 34 * dt;
+      this.z += Math.cos(a) * 34 * dt;
+      FX.particle(this.x, 3, this.z, 0xff3d7f, { life: 0.4, s0: 1.6, s1: 0, drag: 3 });
+      if (Util.dist2(this.x, this.z, Player.x, Player.z) < (this.r + CFG.player.radius) ** 2)
+        Player.takeDamage(26);
+    } else {
+      const dx = Player.x - this.x, dz = Player.z - this.z;
+      const d = Math.hypot(dx, dz) || 1;
+      const want = P2 ? 14 : 18;
+      const k = (d - want) / want;
+      const sp = (P2 ? 9.5 : 6.5) * Util.clamp(k, -1, 1);
+      this.x += dx / d * sp * dt;
+      this.z += dz / d * sp * dt;
+      // 侧向绕行
+      this.x += -dz / d * (P2 ? 5 : 3) * dt;
+      this.z +=  dx / d * (P2 ? 5 : 3) * dt;
+      this.yaw = Math.atan2(dx, dz);
+    }
+    Util.clampArena(this, this.r + 2);
+
+    /* ---- 攻击 ---- */
+    this.atkCd -= dt; this.spinCd -= dt; this.summonCd -= dt; this.chargeCd -= dt;
+
+    // 1) 环形弹幕
+    if (this.atkCd <= 0){
+      this.atkCd = P2 ? 1.5 : 2.5;
+      const n = P2 ? 22 : 14;
+      const off = this.t * 0.7;
+      for (let i = 0; i < n; i++){
+        const a = i / n * Util.TAU + off;
+        Bullets.enemyFire(this.x + Math.sin(a) * this.r, this.z + Math.cos(a) * this.r,
+          a, P2 ? 20 : 16, 11, { color: 0xff3d7f, scale: 1.15, life: 5 });
+      }
+      FX.ring(this.x, this.z, 0xff3d7f, this.r * 2.4, 0.35);
+      Audio2.tone(90, 0.2, 'sawtooth', 0.1, 40);
+    }
+
+    // 2) 追踪散射
+    if (this.spinCd <= 0){
+      this.spinCd = P2 ? 3.0 : 4.6;
+      const base = Math.atan2(Player.x - this.x, Player.z - this.z);
+      const n = P2 ? 9 : 5;
+      for (let i = 0; i < n; i++){
+        const a = base + (i - (n - 1) / 2) * 0.19;
+        Bullets.enemyFire(this.x, this.z, a, 30, 13,
+          { color: 0xffcc33, scale: 0.95, life: 4 });
+      }
+      FX.burst(this.x, this.z, 0xffcc33, 8, 6, 2);
+    }
+
+    // 3) 召唤护卫
+    if (this.summonCd <= 0){
+      this.summonCd = P2 ? 6.5 : 9;
+      const n = P2 ? 6 : 4;
+      for (let i = 0; i < n; i++){
+        const a = i / n * Util.TAU + Math.random();
+        const kind = P2 ? Util.pick(['charger', 'orbiter', 'splitter']) : 'charger';
+        Enemies.spawn(kind, this.x + Math.cos(a) * 9, this.z + Math.sin(a) * 9,
+          1.6 + Game.wave * 0.14, 1.1, 1, false, Game.stageTint);
+      }
+      FX.ring(this.x, this.z, 0xb980ff, 13, 0.5);
+    }
+
+    // 4) P2 冲撞
+    if (P2 && this.chargeCd <= 0 && this.chargeT <= 0){
+      this.chargeCd = 8.5; this.chargeT = 0.85;
+      this.yaw = Math.atan2(Player.x - this.x, Player.z - this.z);
+      HUD.toast('突进！', '', '#ff3d7f', 0.7);
+      World.shake(1.2, 0.3);
+    }
+
+    /* ---- 表现 ---- */
+    const bob = Math.sin(this.t * 1.5) * 0.35;
+    this.g.position.set(this.x, 4.6 + bob, this.z);
+    this.g.rotation.y = this.yaw;
+    const u = this.ud;
+    u.hull.rotation.y += dt * (P2 ? 0.85 : 0.4);
+    u.hull.rotation.x += dt * 0.12;
+    u.rings.forEach((r, i) => {
+      r.rotation.z += dt * (0.35 + i * 0.22) * (i % 2 ? -1 : 1) * (P2 ? 2.1 : 1);
+    });
+    const pulse = 1 + Math.sin(this.t * (P2 ? 9 : 4.5)) * 0.13;
+    u.core.scale.setScalar(pulse);
+    const coreCol = new THREE.Color(P2 ? 0xffcc33 : 0xff8ab0);
+    u.core.traverse(c => { if (c.isMesh) c.material.color.lerp(coreCol, 0.09); });
+    u.halo.material.opacity = 0.16 + Math.sin(this.t * 3) * 0.06;
+    if (u.outerHalo){
+      u.outerHalo.rotation.z += dt * (P2 ? 0.8 : 0.4);
+      u.outerHalo.material.opacity = 0.4 + Math.sin(this.t * 2.4) * 0.16;
+    }
+    u.pods.forEach((p, i) => {
+      const a = this.t * (P2 ? 0.9 : 0.5) + i / 3 * Util.TAU;
+      const rad = 6.0;
+      p.position.set(Math.cos(a) * rad, Math.sin(this.t * 1.3 + i) * 1.2, Math.sin(a) * rad);
+    });
+    u.turrets.forEach((t, i) => {
+      t.position.y = 0.3 + Math.sin(this.t * 3 + i) * 0.22;
+    });
+
+    HUD.setBoss(this.hp / this.maxHp);
+  },
+
+  clear(){
+    this.active = false; this.entering = false; this.phase = 1;
+    this.hp = 0; this.chargeT = 0;
+    if (this.g){
+      this.g.visible = false;
+      this.ud.hull.traverse(c => { if (c.isMesh && c.material.emissive) c.material.emissive.setHex(CFG.colors.boss); });
+    }
+    HUD.showBoss(false);
+  },
+};
+
+/* ============================ Progress 成长 ============================ */
+/* ============================ 标签共鸣（流派构筑系统） ============================ */
+/* 每把武器在 W_INFO 上挂 1~2 个标签；同标签武器等级合计达 3/6/9/12 阶梯解锁全局增益。
+   所有乘算集中在 Synergy.mods，由少数 choke point（Enemies.damage / Boss.damage /
+   Player.heal / Player.speed / Player.armor / Weapons.rollCrit / critMul）消费，
+   避免把乘算撒进每把武器。剩余 mods（ctrl/elem/vuln/projSpeed/fireRate/pierce/
+   summonDmg/summonRate/dronePlus/onHitHeal）为后续武器/僚机/敌人阶段消费预留。 */
+const Synergy = {
+  TIERS: {
+    heavy:   { name:'重装', color:'#ff9d5c', steps:[3,6,9,12],
+               dmg:[0.08,0.18,0.30,0.40], moveSlow:[0,0.05,0.10,0.15], armor:[0.05,0.10,0.15,0.20] },
+    precise: { name:'精密', color:'#7fd4ff', steps:[3,6,9,12],
+               crit:[0.05,0.15,0.25,0.35], critDmg:[0,0.15,0.30,0.50], pierce:[0,0,0,1] },
+    energy:  { name:'能量', color:'#c77dff', steps:[3,6,9,12],
+               ctrl:[0.15,0.30,0.45,0.60], elem:[0,0.10,0.20,0.30], vuln:[0,0,0.25,0.50] },
+    barrage: { name:'弹幕', color:'#ffd95c', steps:[3,6,9,12],
+               projSpeed:[0.10,0.20,0.30,0.40], fireRate:[0,0.10,0.20,0.30], pierce:[0,0,1,1] },
+    summon:  { name:'召唤', color:'#9dff9d', steps:[3,6,9,12],
+               dmg:[0.15,0.30,0.45,0.60], rate:[0,0.10,0.20,0.30], drone:[0,0,1,1] },
+    medical: { name:'医疗', color:'#5dff9b', steps:[3,6,9,12],
+               heal:[0.25,0.60,1.00,1.50], onHit:[0,0,3,6] },
+  },
+  mods: { dmg:1, heal:1, moveSlow:0, armor:0, crit:0, critDmg:0,
+          ctrl:0, elem:0, vuln:0, projSpeed:0, fireRate:1, pierce:0,
+          summonDmg:1, summonRate:1, dronePlus:0, onHitHeal:0 },
+  _lv: {},
+  refresh(){
+    const lv = {}; for (const k in this.TIERS) lv[k] = 0;
+    for (const wk in Progress.weapons){
+      const L = Progress.weapons[wk]; if (!L) continue;
+      const tags = (Progress.W_INFO[wk] && Progress.W_INFO[wk].tags) || [];
+      for (const t of tags) lv[t] = (lv[t] || 0) + L;
+    }
+    this._lv = lv;
+    const m = this.mods;
+    m.dmg = 1; m.heal = 1; m.moveSlow = 0; m.armor = 0; m.crit = 0; m.critDmg = 0;
+    m.ctrl = 0; m.elem = 0; m.vuln = 0; m.projSpeed = 0; m.fireRate = 1; m.pierce = 0;
+    m.summonDmg = 1; m.summonRate = 1; m.dronePlus = 0; m.onHitHeal = 0;
+    for (const tag in this.TIERS){
+      const T = this.TIERS[tag]; const total = lv[tag] || 0;
+      let tier = 0; for (let i = 0; i < T.steps.length; i++) if (total >= T.steps[i]) tier = i + 1;
+      if (!tier) continue;
+      const a = tier - 1;
+      if (tag === 'summon'){
+        if (T.dmg)      m.summonDmg = 1 + T.dmg[a];
+        if (T.rate)     m.summonRate = 1 + T.rate[a];
+        if (T.drone)    m.dronePlus  = T.drone[a];
+      } else {
+        if (T.dmg)      m.dmg      = 1 + T.dmg[a];
+        if (T.heal)     m.heal     = 1 + T.heal[a];
+        if (T.moveSlow) m.moveSlow = T.moveSlow[a];
+        if (T.armor)    m.armor    = T.armor[a];
+        if (T.crit)     m.crit     = T.crit[a];
+        if (T.critDmg)  m.critDmg  = T.critDmg[a];
+        if (T.ctrl)     m.ctrl     = T.ctrl[a];
+        if (T.elem)     m.elem     = T.elem[a];
+        if (T.vuln)     m.vuln     = T.vuln[a];
+        if (T.projSpeed)m.projSpeed= T.projSpeed[a];
+        if (T.fireRate) m.fireRate = 1 + T.fireRate[a];
+        if (T.pierce)   m.pierce   = T.pierce[a];
+        if (T.onHit)    m.onHitHeal= T.onHit[a];
+      }
+    }
+  },
+  tierInfo(tag){
+    const T = this.TIERS[tag]; if (!T) return null;
+    const total = this._lv[tag] || 0; let tier = 0;
+    for (let i = 0; i < T.steps.length; i++) if (total >= T.steps[i]) tier = i + 1;
+    const next = tier < T.steps.length ? T.steps[tier] : null;
+    return { name:T.name, color:T.color, total, tier, next };
+  },
+  activeList(){
+    const out = [];
+    for (const tag in this.TIERS){ const t = this.tierInfo(tag); if (t && t.tier > 0) out.push(t); }
+    out.sort((a, b) => b.tier - a.tier);
+    return out;
+  },
+};
+
+const Progress = {
+  level: 1, exp: 0, need: 5, pending: 0,
+  weapons: {}, passives: {},
+  cards: [],
+
+  W_INFO: {
+    cannon:  { name:'脉冲主炮', icon:'✦', desc:'向索敌方向连射能量弹', tags:['heavy','barrage'] },
+    missile: { name:'追踪导弹', icon:'◈', desc:'自动追踪，命中爆炸溅射', tags:['heavy'] },
+    laser:   { name:'相位激光', icon:'≡', desc:'瞬发贯穿光束，无视队列', tags:['precise'] },
+    aura:    { name:'湮灭力场', icon:'◎', desc:'环绕自身持续灼烧并减速', tags:['energy'] },
+    spread:  { name:'散射霰弹', icon:'❋', desc:'近距扇形霰弹覆盖', tags:['barrage'] },
+    orbit:   { name:'轨道切割环', icon:'✺', desc:'环绕自身的旋转斩击环', tags:['heavy'] },
+    chain:   { name:'等离子电弧', icon:'⚡', desc:'电弧在敌人间弹跳', tags:['energy'] },
+    drone:   { name:'无人僚机', icon:'◢', desc:'召唤无人机环绕攻击', tags:['summon'] },
+    nova:    { name:'湮灭新星', icon:'✷', desc:'自身为中心爆发冲击波', tags:['heavy'] },
+    saw:     { name:'量子飞轮', icon:'❂', desc:'掷出旋转刃穿透回旋', tags:['heavy','precise'] },
+    rail:    { name:'电磁轨道炮', icon:'⇶', desc:'蓄能贯穿重炮，一发撕穿全场', tags:['heavy','precise'] },
+    flame:   { name:'等离子灼焰', icon:'🔥', desc:'前方扇形持续灼烧', tags:['energy'] },
+    pulse:   { name:'重力脉冲', icon:'◉', desc:'扩散冲击波，横扫近身敌群', tags:['barrage'] },
+    frost:   { name:'冷冻射线', icon:'❄', desc:'命中叠霜，冻结期受伤 ×1.5', tags:['energy'] },
+    meteor:  { name:'轨道打击', icon:'☄', desc:'锁定敌群密集区，残骸坠落 AoE', tags:['heavy'] },
+    swarm:   { name:'蜂群导弹', icon:'✺', desc:'微型追踪弹齐射，覆盖压制', tags:['barrage'] },
+    storm:   { name:'离子风暴', icon:'🌩', desc:'密集区随机雷击，连锁天罚', tags:['energy'] },
+    blackhole:{ name:'黑洞', icon:'●', desc:'生成引力井吸附并灼烧，到期坍缩爆发', tags:['energy'] },
+    phase:    { name:'相位护盾', icon:'⛨', desc:'周期展开吸收伤害的相位力场', tags:['medical'] },
+    photon:   { name:'光子跳弹', icon:'✦', desc:'命中后弹射至最近其他敌人', tags:['precise'] },
+    tractor:  { name:'牵引光束', icon:'➰', desc:'以自身为中心的引力场聚敌灼烧', tags:['heavy'] },
+    rotor:    { name:'旋转相阵', icon:'✺', desc:'环绕自身的相位节点接触杀伤', tags:['barrage'] },
+    mine:     { name:'太空雷阵', icon:'✸', desc:'周围布设地雷，敌近即爆', tags:['barrage'] },
+    nano:     { name:'纳米修复', icon:'✚', desc:'周期治疗，恢复结构强度', tags:['medical'] },
+  },
+  G_INFO: {
+    striker:  { name:'突击僚机', icon:'▲', desc:'高频双联装，压制杂兵' },
+    warden:   { name:'守护僚机', icon:'⬢', desc:'拦截敌方弹幕，贴身护卫' },
+    howitzer: { name:'榴弹僚机', icon:'●', desc:'抛射高爆弹，大范围杀伤' },
+    phantom:  { name:'幽灵刺客', icon:'◣', desc:'高伤穿透直射，绕背突袭' },
+    medic:    { name:'医疗机',   icon:'✚', desc:'定期为玩家恢复生命值' },
+  },
+  P_INFO: {
+    speed: { name:'推进强化', icon:'»', desc:'移动速度提升',   fmt: l => '+' + (l * 9) + '% 移速' },
+    rate:  { name:'超载弹链', icon:'⚡', desc:'全武器射速提升', fmt: l => '+' + (l * 9) + '% 射速' },
+    crit:  { name:'精准校准', icon:'✧', desc:'暴击率与暴伤提升', fmt: l => (l * 7) + '% 暴击 / ×' + (2.1 + l * 0.05).toFixed(2) },
+    pick:  { name:'磁力线圈', icon:'◉', desc:'经验拾取范围扩大', fmt: l => '+' + (l * 34) + '% 拾取' },
+    hp:    { name:'装甲增幅', icon:'✚', desc:'最大生命提升并回复', fmt: l => '+' + (l * 22) + ' 最大生命' },
+    armor: { name:'能量护盾', icon:'⛨', desc:'受到的伤害降低',   fmt: l => '-' + (l * 6) + '% 受伤' },
+  },
+
+  reset(){
+    this.level = 1; this.exp = 0; this.pending = 0;
+    this.need = this.calcNeed(1);
+    // 起手武器：主炮永远有，再叠加所选飞机的初始武器（VS 风格）
+    const ship = Player.cfg || SHIPS[0];
+    this.weapons = { cannon: 1 };
+    if (ship.startWeapon && ship.startWeapon !== 'cannon'){
+      this.weapons[ship.startWeapon] = 1;
+    }
+    // 天赋：开局送 1 级对应被动
+    this.passives = {};
+    if (ship.talent){
+      this.passives[ship.talent] = (this.passives[ship.talent] || 0) + 1;
+    }
+    this.cards = [];
+    // 天赋若是 hp，重新计算最大生命并回满
+    if (this.p('hp') > 0){
+      Player.maxHp = Player.cfg.hp + this.p('hp') * 22;
+      Player.hp = Player.maxHp;
+    }
+    Synergy.refresh();   // 起手武器/天赋确定后刷新共鸣
+  },
+
+  calcNeed(lv){ return Math.round(CFG.xpBase + CFG.xpStep * Math.pow(lv, CFG.xpPow)); },
+
+  w(k){ return this.weapons[k] || 0; },
+  p(k){ return this.passives[k] || 0; },
+
+  gainExp(n){
+    this.exp += n;
+    let guard = 0;
+    while (this.exp >= this.need && guard++ < 200){
+      this.exp -= this.need;
+      this.level++;
+      this.pending++;
+      this.need = this.calcNeed(this.level);
+    }
+    if (this.pending > 0 && Game.state === 'PLAYING') Game.openLevelUp();
+  },
+
+  /* ---- 生成 3 张候选卡 ---- */
+  roll(){
+    const opts = [];
+    // 武器
+    for (const k in this.W_INFO){
+      const lv = this.w(k);
+      if (lv >= 5) continue;
+      const owned = lv > 0;
+      // 已有的更容易再出现（滚雪球），未拥有的在武器数<4 时也有机会
+      opts.push({ type:'weapon', key:k, lv, weight: owned ? 30 : (Object.keys(this.weapons).length < 4 ? 22 : 8) });
+    }
+    // 僚机
+    for (const k in this.G_INFO){
+      const c = Wingmen.count(k);
+      if (c >= 3 || Wingmen.list.length >= 6) continue;
+      opts.push({ type:'wing', key:k, lv:c, weight: 16 });
+    }
+    // 被动
+    for (const k in this.P_INFO){
+      const lv = this.p(k);
+      if (lv >= 5) continue;
+      let w = 20;
+      if (k === 'hp' && Player.hp / Player.maxHp < 0.5) w = 34;   // 残血时更容易出防御
+      if (k === 'armor' && Player.hp / Player.maxHp < 0.5) w = 30;
+      opts.push({ type:'passive', key:k, lv, weight: w });
+    }
+    // 保底治疗
+    if (Player.hp < Player.maxHp * 0.75)
+      opts.push({ type:'heal', key:'heal', lv:0, weight: Player.hp / Player.maxHp < 0.35 ? 26 : 10 });
+
+    // 突变卡：里程碑稀有，强力复合增益（LV.4 后小概率出现）
+    if (this.level >= 4 && Math.random() < 0.16)
+      opts.push({ type:'mutation', key:'mutation', lv:0, weight: 6 });
+
+    // 加权抽 3 张不重复
+    const picked = [];
+    const pool = opts.slice();
+    for (let n = 0; n < 3 && pool.length; n++){
+      let tot = 0;
+      for (const o of pool) tot += o.weight;
+      let r = Math.random() * tot, idx = 0;
+      for (let i = 0; i < pool.length; i++){
+        r -= pool[i].weight;
+        if (r <= 0){ idx = i; break; }
+      }
+      picked.push(pool.splice(idx, 1)[0]);
+    }
+    // 极端情况（全满级）兜底
+    while (picked.length < 3) picked.push({ type:'heal', key:'heal', lv:0, weight:1 });
+    this.cards = picked.map(c => this.describe(c));
+    return this.cards;
+  },
+
+  /** 补齐 UI 需要的文案：名称 / 等级 / 效果差异 */
+  describe(c){
+    const o = Object.assign({}, c);
+    if (c.type === 'weapon'){
+      const I = this.W_INFO[c.key];
+      const T = Weapons.TABLE[c.key];
+      o.name = I.name; o.icon = I.icon; o.desc = I.desc;
+      o.tag = c.lv === 0 ? '新武器' : '武器强化';
+      o.lvTxt = c.lv === 0 ? '获得 · LV.1' : ('LV.' + c.lv + '  →  LV.' + (c.lv + 1));
+      const nx = T[c.lv];
+      if (c.key === 'aura')
+        o.diff = '范围 ' + nx.r.toFixed(1) + ' · 伤害 ' + nx.dmg + ' · 减速 ' + Math.round(nx.slow * 100) + '%';
+      else if (c.key === 'missile')
+        o.diff = nx.n + ' 连发 · 伤害 ' + nx.dmg + ' · 溅射 ' + nx.splash.toFixed(1);
+      else if (c.key === 'laser')
+        o.diff = nx.n + ' 道光束 · 伤害 ' + nx.dmg;
+      else if (c.key === 'spread')
+        o.diff = nx.n + ' 发扇形 · 伤害 ' + nx.dmg;
+      else if (c.key === 'orbit')
+        o.diff = nx.n + ' 柄光刃 · 伤害 ' + nx.dmg + ' · 半径 ' + nx.r.toFixed(1);
+      else if (c.key === 'chain')
+        o.diff = nx.bounces + ' 次弹跳 · 伤害 ' + nx.dmg + ' · 范围 ' + nx.range;
+      else if (c.key === 'drone')
+        o.diff = nx.n + ' 架无人机 · 伤害 ' + nx.dmg + ' · 半径 ' + nx.r.toFixed(1);
+      else if (c.key === 'nova')
+        o.diff = '范围 ' + nx.r.toFixed(1) + ' · 伤害 ' + nx.dmg + ' · 周期 ' + nx.cd.toFixed(1) + 's';
+      else if (c.key === 'saw')
+        o.diff = nx.n + ' 柄飞锯 · 伤害 ' + nx.dmg + ' · 速度 ' + nx.spd;
+      else if (c.key === 'rail')
+        o.diff = '伤害 ' + nx.dmg + ' · 穿透 ' + (nx.pierce >= 999 ? '全场' : nx.pierce) + ' · 弹速 ' + nx.spd;
+      else if (c.key === 'flame')
+        o.diff = '范围 ' + nx.range + ' · 伤害 ' + nx.dmg + ' · 扇角 ' + Math.round(nx.arc * 57) + '°';
+      else if (c.key === 'pulse')
+        o.diff = '半径 ' + nx.r + ' · 伤害 ' + nx.dmg + ' · 周期 ' + nx.cd.toFixed(1) + 's';
+      else if (c.key === 'blackhole')
+        o.diff = '半径 ' + nx.r.toFixed(1) + ' · 秒伤 ' + nx.dps + ' · 持续 ' + nx.life.toFixed(1) + 's';
+      else if (c.key === 'phase')
+        o.diff = '护盾 ' + nx.hp + ' HP · 持续 ' + nx.dur.toFixed(1) + 's · 周期 ' + nx.cd.toFixed(1) + 's';
+      else if (c.key === 'photon')
+        o.diff = nx.n + ' 发 · 伤害 ' + nx.dmg + ' · 弹射 ' + nx.bounce + ' 次';
+      else if (c.key === 'tractor')
+        o.diff = '半径 ' + nx.r + ' · 秒伤 ' + nx.dps + ' · 牵引 ' + nx.pull;
+      else if (c.key === 'rotor')
+        o.diff = nx.n + ' 节点 · 伤害 ' + nx.dmg + ' · 半径 ' + nx.r.toFixed(1);
+      else if (c.key === 'mine')
+        o.diff = nx.n + ' 雷 · 伤害 ' + nx.dmg + ' · 半径 ' + nx.r.toFixed(1);
+      else if (c.key === 'nano')
+        o.diff = '治疗 +' + nx.hp + ' · 周期 ' + nx.cd.toFixed(1) + 's';
+      else
+        o.diff = nx.n + ' 发 · 伤害 ' + nx.dmg + (nx.pierce ? ' · 穿透 ' + nx.pierce : '');
+      // 附标签进度，供选卡显示共鸣阶梯
+      const wt = this.W_INFO[c.key].tags || [];
+      o.tags = wt.map(t => { const ti = Synergy.tierInfo(t);
+        return { name: ti ? ti.name : t, color: ti ? ti.color : '#fff',
+                 total: ti ? ti.total : 0, tier: ti ? ti.tier : 0, next: ti ? ti.next : null }; });
+    } else if (c.type === 'wing'){
+      const I = this.G_INFO[c.key];
+      o.name = I.name; o.icon = I.icon; o.desc = I.desc;
+      o.tag = '僚机';
+      o.lvTxt = '编队 ' + c.lv + ' → ' + (c.lv + 1) + ' 架';
+      const S = Wingmen.SPEC[c.key];
+      o.diff = '伤害 ' + S.dmg + ' · 间隔 ' + S.cd.toFixed(2) + 's';
+    } else if (c.type === 'passive'){
+      const I = this.P_INFO[c.key];
+      o.name = I.name; o.icon = I.icon; o.desc = I.desc;
+      o.tag = '被动';
+      o.lvTxt = 'LV.' + c.lv + '  →  LV.' + (c.lv + 1);
+      o.diff = I.fmt(c.lv + 1);
+    } else if (c.type === 'mutation'){
+      o.name = '基因突变'; o.icon = '☢'; o.desc = '觉醒的复合强化';
+      o.tag = '突变'; o.lvTxt = '一次性 · 强力';
+      o.diff = '射速+18% · 暴击+14% · 移速+9% · 生命+22';
+    } else {
+      o.name = '紧急修复'; o.icon = '✚'; o.desc = '立即恢复全部结构强度';
+      o.tag = '补给'; o.lvTxt = '一次性';
+      o.diff = '生命回满 (' + Math.round(Player.maxHp - Player.hp) + ' HP)';
+    }
+    return o;
+  },
+
+  applyCard(c){
+    if (!c) return;
+    if (c.type === 'weapon'){
+      this.weapons[c.key] = Math.min(5, this.w(c.key) + 1);
+    } else if (c.type === 'wing'){
+      Wingmen.add(c.key);
+    } else if (c.type === 'passive'){
+      const before = this.p(c.key);
+      this.passives[c.key] = Math.min(5, before + 1);
+      if (c.key === 'hp'){
+        Player.maxHp = Player.cfg.hp + this.p('hp') * 22;
+        Player.heal(22);
+      }
+    } else if (c.type === 'heal'){
+      Player.heal(Player.maxHp);
+    } else if (c.type === 'mutation'){
+      this.passives.rate  = Math.min(5, this.p('rate') + 2);
+      this.passives.crit  = Math.min(5, this.p('crit') + 2);
+      this.passives.speed = Math.min(5, this.p('speed') + 1);
+      this.passives.hp    = Math.min(5, this.p('hp') + 1);
+      Player.maxHp = Player.cfg.hp + this.p('hp') * 22;
+      Player.heal(22);
+    }
+    Synergy.refresh();   // 等级变化后刷新共鸣（影响下一帧伤害/治疗/移速）
+    Audio2.levelup();
+    HUD.renderGear();
+  },
+};
+
+/* ==================== p8_game.js ==================== */
+
+/* ============================ HUD 界面 ============================ */
+const HUD = {
+  el: {},
+  toastT: 0,
+
+  init(){
+    const id = (s) => document.getElementById(s);
+    this.el = {
+      xpBar: id('xpBar'), xpTxt: id('xpTxt'),
+      hpBar: id('hpBar'), hpTxt: id('hpTxt'),
+      wave: id('hWave'), time: id('hTime'), kill: id('hKill'),
+      fps: id('hFps'), dps: id('hDps'),
+      gear: id('gear'),
+      bossBar: id('bossBar'), bossFill: id('bossFill'), bossName: id('bossName'),
+      toast: id('toast'), toastA: id('toastA'), toastB: id('toastB'),
+      levelup: id('levelup'), cards: id('cards'), luLv: id('luLv'),
+      overlay: id('overlay'), sTitle: id('sTitle'), sKick: id('sKick'), sSub: id('sSub'),
+      sStats: id('sStats'), howto: id('howto'),
+      rTime: id('rTime'), rKill: id('rKill'), rLv: id('rLv'), rWave: id('rWave'), rDps: id('rDps'),
+      btnStart: id('btnStart'), btnEndless: id('btnEndless'), btnMenuR: id('btnMenuR'),
+      pause: id('pause'), hitFlash: id('hitFlash'), boot: id('boot'),
+      btnSound: id('btnSound'),
+      shipRow: id('shipRow'),
+      waveBanner: id('waveBanner'), wbNum: id('wbNum'), wbTxt: id('wbTxt'),
+      btnResume: id('btnResume'), btnRestart: id('btnRestart'), btnMenu: id('btnMenu'),
+      sector: id('hSector'), sbNum: id('sbNum'), sbTxt: id('sbTxt'), sectorBanner: id('sectorBanner'),
+      // —— 设置菜单 ——
+      settings: id('settings'),
+      sMaster: id('sMaster'), sSfx: id('sSfx'), sMusic: id('sMusic'),
+      rvMaster: id('rvMaster'), rvSfx: id('rvSfx'), rvMusic: id('rvMusic'),
+      kUp: id('kUp'), kDown: id('kDown'), kLeft: id('kLeft'), kRight: id('kRight'),
+      kDash: id('kDash'), kForm: id('kForm'), kPause: id('kPause'),
+      btnSettings: id('btnSettings'), btnSettingsMenu: id('btnSettingsMenu'), btnSettingsClose: id('btnSettingsClose'),
+      btnHell: id('btnHell'), diffChip: id('diffChip'), diffTxt: id('diffTxt'),
+    };
+
+    this.el.btnStart.addEventListener('click', () => { Audio2.init(); Audio2.resume(); Game.start(false); });
+    this.el.btnEndless.addEventListener('click', () => { Audio2.init(); Audio2.resume(); Game.start(true); });
+    this.el.btnHell.addEventListener('click', () => { Audio2.init(); Audio2.resume(); Game.start(false, true); });
+    this.el.btnSound.addEventListener('click', () => {
+      const muted = Audio2.toggleMute();
+      this.el.btnSound.textContent = muted ? '🔇' : '🔊';
+      this.el.btnSound.classList.toggle('off', muted);
+    });
+
+    // 暂停 / 返回菜单按钮
+    this.el.btnResume.addEventListener('click', () => Game.togglePause());
+    this.el.btnRestart.addEventListener('click', () => Game.start(Game.endless, Game.hell));
+    this.el.btnMenu.addEventListener('click', () => Game.toMenu());
+    this.el.btnMenuR.addEventListener('click', () => Game.toMenu());
+
+    // —— 设置菜单：音量 + 键位 ——
+    const SS = this.el;
+    const keyName = (code) => {
+      if (!code) return '—';
+      if (code.startsWith('Key'))   return code.slice(3);
+      if (code.startsWith('Digit')) return code.slice(5);
+      if (code.startsWith('Arrow')) return ({ Up:'↑', Down:'↓', Left:'←', Right:'→' })[code.slice(5)] || code;
+      const m = { Space:'空格', Escape:'Esc', ShiftLeft:'LShift', ShiftRight:'RShift', ControlLeft:'LCtrl', ControlRight:'RCtrl' };
+      return m[code] || code;
+    };
+    const setRv = (el, v) => { if (el) el.textContent = Math.round(v * 100); };
+    SS.sMaster.value = Math.round(Settings.vol.master * 100); setRv(SS.rvMaster, Settings.vol.master);
+    SS.sSfx.value   = Math.round(Settings.vol.sfx   * 100); setRv(SS.rvSfx,   Settings.vol.sfx);
+    SS.sMusic.value = Math.round(Settings.vol.music * 100); setRv(SS.rvMusic, Settings.vol.music);
+    SS.sMaster.addEventListener('input', () => { const v = SS.sMaster.value / 100; Audio2.setMasterVol(v); setRv(SS.rvMaster, v); Settings.save(); });
+    SS.sSfx.addEventListener('input',   () => { const v = SS.sSfx.value   / 100; Audio2.setSfxVol(v);   setRv(SS.rvSfx,   v); Settings.save(); });
+    SS.sMusic.addEventListener('input', () => { const v = SS.sMusic.value / 100; Audio2.setMusicVol(v); setRv(SS.rvMusic, v); Settings.save(); });
+    const kbBtns = { up: SS.kUp, down: SS.kDown, left: SS.kLeft, right: SS.kRight, dash: SS.kDash, form: SS.kForm, pause: SS.kPause };
+    const refreshKb = () => {
+      for (const a in kbBtns){
+        const capturing = (Input.capturing === a);
+        kbBtns[a].textContent = capturing ? '按任意键…' : keyName(Settings.binds[a]);
+        kbBtns[a].classList.toggle('capturing', capturing);
+      }
+    };
+    for (const a in kbBtns){
+      kbBtns[a].addEventListener('click', (e) => { e.currentTarget.blur(); Input.rebind(a, refreshKb); refreshKb(); });
+    }
+    refreshKb();
+    SS.btnSettings.addEventListener('click',      () => SS.settings.classList.remove('hide'));
+    SS.btnSettingsMenu.addEventListener('click', () => SS.settings.classList.remove('hide'));
+    SS.btnSettingsClose.addEventListener('click', () => SS.settings.classList.add('hide'));
+
+    // 机型选择卡片（由 SHIPS 动态生成，含属性条）
+    this.buildShipCards();
+  },
+
+  buildShipCards(){
+    const wrap = document.getElementById('shipCards');
+    if (!wrap || typeof SHIPS === 'undefined') return;
+    const sm = { hp:[1e9,0], spd:[1e9,0], fire:[1e9,0] };
+    SHIPS.forEach(s => { for (const k in sm){ sm[k][0]=Math.min(sm[k][0],s[k]); sm[k][1]=Math.max(sm[k][1],s[k]); } });
+    const norm = (v,k) => sm[k][1]>sm[k][0] ? Math.round((v-sm[k][0])/(sm[k][1]-sm[k][0])*100) : 100;
+    const hex = (h) => '#' + ('000000'+h.toString(16)).slice(-6);
+    wrap.innerHTML = '';
+    SHIPS.forEach((s, i) => {
+      const c = hex(s.color);
+      const card = document.createElement('div');
+      card.className = 'ship-card' + (i === Game.shipIdx ? ' sel' : '');
+      card.dataset.idx = i;
+      const bar = (lab, key) =>
+        '<div class="stat"><span>'+lab+'</span><span class="v">'+norm(s[key],key)+'</span></div>' +
+        '<div class="bar"><i style="width:'+norm(s[key],key)+'%;background:'+c+'"></i></div>';
+      const wName = (typeof Progress !== 'undefined' && Progress.W_INFO[s.startWeapon])
+        ? Progress.W_INFO[s.startWeapon].name : (s.startWeapon || '—');
+      const traitTxt = s.trait || (s.talent ? s.talent : '无天赋');
+      card.innerHTML =
+        '<canvas class="shipPrev" width="200" height="160"></canvas>' +
+        '<div class="shipHead"><span class="sw" style="color:'+c+';background:'+c+'"></span><b>'+s.name+'</b></div>' +
+        '<span class="sdesc">'+s.desc+'</span>' +
+        bar('装甲','hp') + bar('速度','spd') + bar('射速','fire') +
+        '<div class="tags">' +
+          '<span class="tag tal">天赋 · '+traitTxt+'</span>' +
+          '<span class="tag wp">初始武器 · '+wName+'</span>' +
+        '</div>';
+      card.addEventListener('click', () => {
+        Game.shipIdx = i;
+        this.shipCards.forEach(x => x.classList.toggle('sel', x === card));
+      });
+      wrap.appendChild(card);
+    });
+    this.shipCards = Array.from(wrap.children);
+    this.shipCanvases = this.shipCards.map(c => c.querySelector('.shipPrev'));
+    this.shipCtxs = this.shipCanvases.map(c => c ? c.getContext('2d') : null);
+  },
+
+  /* ---- 战机选择界面：用单一离屏渲染器把每架飞机画进卡片 canvas ---- */
+  initPreview(){
+    if (this._pv) return this._pv;
+    const W = 200, H = 160, TARGET = 1.9;
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    renderer.setSize(W, H, false);
+    renderer.setClearColor(0x000000, 0);
+    const scene = new THREE.Scene();
+    const cam = new THREE.PerspectiveCamera(40, W / H, 0.1, 100);
+    cam.position.set(3.2, 1.9, 5.4); cam.lookAt(0, 0, 0);
+    scene.add(new THREE.AmbientLight(0x9fb6d0, 0.55));
+    const key = new THREE.DirectionalLight(0xcfeaff, 1.6); key.position.set(4, 6, 5); scene.add(key);
+    const rim = new THREE.DirectionalLight(0xff5c93, 0.6); rim.position.set(-5, 2, -4); scene.add(rim);
+    const fill = new THREE.DirectionalLight(0x38f0ff, 0.5); fill.position.set(0, -3, 2); scene.add(fill);
+    const pivot = new THREE.Group(); scene.add(pivot);
+    // 每架飞机建模 → 居中缩放到统一画幅，保证不同机型都框得下
+    const holders = SHIPS.map(s => {
+      const g = Gfx.ship(s.model, s.color, 1.0).g;
+      const box = new THREE.Box3().setFromObject(g);
+      const ctr = new THREE.Vector3(); box.getCenter(ctr);
+      const sz = new THREE.Vector3(); box.getSize(sz);
+      const max = Math.max(sz.x, sz.y, sz.z) || 1;
+      g.position.sub(ctr);
+      const holder = new THREE.Group();
+      holder.add(g);
+      holder.scale.setScalar(TARGET / max);
+      return holder;
+    });
+    this._pv = { renderer, scene, cam, pivot, holders, W, H };
+    return this._pv;
+  },
+
+  renderPreviews(now){
+    if (!this.shipCanvases || !this.shipCanvases.length) return;
+    const pv = this.initPreview();
+    const ang = (now || 0) * 0.0005;
+    pv.pivot.rotation.set(0.26, ang, 0);
+    for (let i = 0; i < this.shipCanvases.length; i++){
+      const cv = this.shipCanvases[i], ctx = this.shipCtxs && this.shipCtxs[i];
+      if (!cv || !ctx) continue;
+      while (pv.pivot.children.length) pv.pivot.remove(pv.pivot.children[0]);
+      pv.pivot.add(pv.holders[i]);
+      pv.renderer.render(pv.scene, pv.cam);
+      ctx.clearRect(0, 0, cv.width, cv.height);
+      ctx.drawImage(pv.renderer.domElement, 0, 0, cv.width, cv.height);
+    }
+  },
+
+  update(){
+    const e = this.el;
+    // 经验
+    const pct = Util.clamp(Progress.exp / Progress.need * 100, 0, 100);
+    e.xpBar.style.width = pct + '%';
+    e.xpTxt.textContent = 'LV.' + Progress.level + '　' +
+      Math.floor(Progress.exp) + ' / ' + Progress.need;
+    // 生命
+    const hp = Util.clamp(Player.hp / Player.maxHp * 100, 0, 100);
+    e.hpBar.style.width = hp + '%';
+    e.hpTxt.textContent = Math.ceil(Player.hp) + ' / ' + Math.round(Player.maxHp);
+    // 状态
+    e.wave.textContent = Game.wave;
+    if (e.sector){ e.sector.textContent = Game.stageName; e.sector.style.color = Game.stageAccent; }
+    e.time.textContent = Util.fmtTime(Game.time);
+    e.kill.textContent = Game.kills;
+    const el = Math.max(1, Game.time);
+    e.dps.textContent = Math.round(Game.dmgDealt / el);
+  },
+
+  setFps(v){ this.el.fps.textContent = Math.round(v); },
+
+  renderGear(){
+    const g = this.el.gear;
+    g.innerHTML = '';
+    const mk = (cls, icon, name, lv, max) => {
+      const d = document.createElement('div');
+      d.className = 'gi ' + cls + (lv >= max ? ' max' : '');
+      d.innerHTML = '<span>' + icon + '</span><span>' + name + '</span>' +
+        '<span class="lv">' + (lv >= max ? 'MAX' : 'L' + lv) + '</span>';
+      g.appendChild(d);
+    };
+    for (const k in Progress.weapons){
+      if (!Progress.weapons[k]) continue;
+      mk('w', Progress.W_INFO[k].icon, Progress.W_INFO[k].name, Progress.weapons[k], 5);
+    }
+    for (const k in Wingmen.SPEC){
+      const c = Wingmen.count(k);
+      if (c) mk('g', Progress.G_INFO[k].icon, Progress.G_INFO[k].name, c, 3);
+    }
+    for (const k in Progress.passives){
+      if (!Progress.passives[k]) continue;
+      mk('p', Progress.P_INFO[k].icon, Progress.P_INFO[k].name, Progress.passives[k], 5);
+    }
+    // 共鸣条：装备栏底部显示已激活的流派阶梯
+    const sy = Synergy.activeList();
+    if (sy.length){
+      const bar = document.createElement('div');
+      bar.className = 'gi syn';
+      bar.style.cssText = 'width:100%;margin-top:4px;display:flex;gap:8px;flex-wrap:wrap;font-size:11px';
+      bar.innerHTML = sy.map(t => '<span style="color:' + t.color + '">' + t.name + '·' + t.tier + '阶</span>').join('');
+      g.appendChild(bar);
+    }
+  },
+
+  toast(a, b, color, dur){
+    const e = this.el;
+    e.toastA.textContent = a;
+    e.toastB.textContent = b || '';
+    e.toastA.style.color = color || '#38f0ff';
+    e.toast.style.opacity = '1';
+    this.toastT = dur || 1.6;
+  },
+
+  /** 难度标签：地狱模式常显红色「地狱」徽标，普通/无尽模式隐藏 */
+  setDifficulty(hell){
+    if (!this.el.diffChip) return;
+    this.el.diffChip.style.display = hell ? 'flex' : 'none';
+  },
+
+  waveBanner(w){
+    const e = this.el;
+    e.wbNum.textContent = 'WAVE ' + w;
+    e.wbTxt.textContent = '第 ' + w + ' 波';
+    e.waveBanner.classList.remove('hide', 'show');
+    void e.waveBanner.offsetWidth;          // 强制回流以重启动画
+    e.waveBanner.classList.add('show');
+  },
+
+  /** 星域（地图）切换横幅：SECTOR I · 残骸星域 */
+  sectorBanner(idx, name, sub){
+    const e = this.el;
+    const RN = ['I','II','III','IV','V','VI','VII','VIII','IX','X'];
+    e.sbNum.textContent = 'SECTOR ' + (RN[idx] || (idx + 1)) + ' · ' + sub;
+    e.sbTxt.textContent = name;
+    e.sectorBanner.classList.remove('hide', 'show');
+    void e.sectorBanner.offsetWidth;
+    e.sectorBanner.classList.add('show');
+  },
+
+  updateToast(dt){
+    if (this.toastT > 0){
+      this.toastT -= dt;
+      if (this.toastT <= 0) this.el.toast.style.opacity = '0';
+    }
+  },
+
+  flashHit(){
+    const f = this.el.hitFlash;
+    f.style.opacity = '1';
+    clearTimeout(this._ft);
+    this._ft = setTimeout(() => { f.style.opacity = '0'; }, 110);
+  },
+
+  showBoss(on){ this.el.bossBar.classList.toggle('hide', !on); },
+  setBoss(ratio){ this.el.bossFill.style.width = Util.clamp(ratio * 100, 0, 100) + '%'; },
+
+  showLevelUp(cards){
+    const e = this.el;
+    e.luLv.textContent = 'LV.' + Progress.level;
+    e.cards.innerHTML = '';
+    cards.forEach((c, i) => {
+      const d = document.createElement('div');
+      d.className = 'card t-' + c.type;
+      d.innerHTML =
+        '<div class="tag">' + c.tag + '</div>' +
+        '<div class="ic">' + c.icon + '</div>' +
+        '<div class="nm">' + c.name + '</div>' +
+        '<div class="lvl">' + c.lvTxt + '</div>' +
+        '<div class="ds">' + c.desc + '</div>' +
+        '<div class="df">' + c.diff + '</div>' +
+        (c.tags && c.tags.length ? '<div class="tags" style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">' +
+          c.tags.map(t => '<span class="tg" style="font-size:11px;opacity:.92;color:' + t.color + '">' +
+            t.name + (t.tier ? '·' + t.tier + '阶' : '') + (t.next ? ' (' + t.total + '/' + t.next + ')' : '') + '</span>').join('') +
+          '</div>' : '') +
+        '<div class="key">' + (i + 1) + '</div>';
+      d.addEventListener('click', () => Game.pickCard(i));
+      e.cards.appendChild(d);
+    });
+    e.levelup.classList.remove('hide');
+  },
+
+  hideLevelUp(){ this.el.levelup.classList.add('hide'); },
+
+  showMenu(){
+    const e = this.el;
+    e.sKick.textContent = 'SURVIVE THE VOID';
+    e.sTitle.textContent = '星陨幸存者';
+    e.sSub.textContent = 'STELLAR SURVIVORS';
+    e.sStats.classList.add('hide');
+    e.howto.classList.remove('hide');
+    e.shipRow.classList.remove('hide');
+    e.btnMenuR.classList.add('hide');
+    e.btnStart.textContent = '开始任务';
+    this.setDifficulty(false);
+    e.overlay.classList.remove('hide');
+    if (typeof World !== 'undefined' && World.renderer){
+      const gl = World.renderer.domElement;
+      if (gl.parentNode) gl.parentNode.removeChild(gl);
+    }
+  },
+
+  showResult(win){
+    const e = this.el;
+    e.sKick.textContent = win ? 'MISSION COMPLETE' : 'SHIP DESTROYED';
+    e.sTitle.textContent = win ? '任务达成' : '舰船损毁';
+    e.sTitle.style.background = win
+      ? 'linear-gradient(180deg,#ffffff,#ffcc33 55%,#c98a10)'
+      : 'linear-gradient(180deg,#ffffff,#ff3d7f 55%,#8a1038)';
+    e.sTitle.style.webkitBackgroundClip = 'text';
+    e.sSub.textContent = win ? '深渊母舰已被击毁' : '你的残骸漂向深空…';
+    e.rTime.textContent = Util.fmtTime(Game.time);
+    e.rKill.textContent = Game.kills;
+    e.rLv.textContent = Progress.level;
+    e.rWave.textContent = Game.wave;
+    e.rDps.textContent = Math.round(Game.dmgDealt / Math.max(1, Game.time));
+    e.sStats.classList.remove('hide');
+    e.howto.classList.add('hide');
+    e.shipRow.classList.add('hide');
+    e.btnStart.textContent = '再来一次';
+    e.btnEndless.classList.toggle('hide', !win);
+    e.btnMenuR.classList.remove('hide');
+    e.overlay.classList.remove('hide');
+  },
+
+  hideOverlay(){ this.el.overlay.classList.add('hide'); },
+};
+
+/* ============================ Game 主控 ============================ */
+const Game = {
+  state: 'MENU',
+  time: 0, wave: 1, kills: 0, dmgDealt: 0,
+  endless: false, bossSpawned: false, bossRound: 0, hell: false,
+  shipIdx: 0,
+  stageIdx: 0, stageName: '', stageAccent: '#38f0ff', stageTint: null,
+  spawnCd: 0, last: 0, fpsT: 0, fpsN: 0,
+  _raf: null,
+
+  init(){
+    World.init();
+    Input.init();
+    FX.init();
+    Bullets.init();
+    Enemies.init();
+    Loot.init();
+    Weapons.init();
+    Wingmen.init();
+    Player.init();
+    Boss.init();
+    Asteroids.init();
+    Minimap.init();
+    HUD.init();
+
+    HUD.showMenu();
+    document.getElementById('boot').classList.add('hide');
+
+    this.last = performance.now();
+    const loop = (t) => { this._raf = requestAnimationFrame(loop); this.frame(t); };
+    this._raf = requestAnimationFrame(loop);
+  },
+
+  /* ---------------- 开局 / 重开 ---------------- */
+  start(endless, hell){
+    this.endless = !!endless;
+    this.hell = !!hell;
+    this.time = 0; this.wave = 1; this.kills = 0; this.dmgDealt = 0;
+    this.bossSpawned = false; this.bossRound = 0;
+    this._waveCache = {};                  // 清空难度曲线缓存（endless 可能随局变化）
+    this.spawnCd = 1.2;
+
+    Enemies.clear();
+    Bullets.reset();
+    Loot.clear();
+    FX.reset();
+    Wingmen.clear();
+    Boss.clear();
+    Weapons.reset();
+    // 先定机型，再让 Progress 依机型天赋/初始武器初始化（顺序很关键）
+    Player.setShip(this.shipIdx);
+    Player.reset();
+    Progress.reset();
+    Asteroids.reset();
+    Asteroids.scatter(14);
+    Player.inv = 1.6;                    // 开局短暂无敌
+
+    World.camX = 0; World.camZ = 0;
+    HUD.hideLevelUp();
+    HUD.hideOverlay();
+    HUD.renderGear();
+    HUD.el.btnEndless.classList.add('hide');
+    HUD.el.pause.classList.add('hide');
+
+    this.state = 'PLAYING';
+    if (typeof World !== 'undefined' && World.renderer){
+      const gl = World.renderer.domElement;
+      if (!gl.parentNode) document.body.insertBefore(gl, document.body.firstChild);
+      gl.style.display = 'block';
+    }
+    Audio2.startMusic();
+    HUD.el.btnSound.textContent = Audio2.muted ? '🔇' : '🔊';
+    HUD.el.btnSound.classList.toggle('off', Audio2.muted);
+    this.applyStage(0, true);
+    if (this.hell) HUD.toast('地狱模式', '极度危险 · 敌潮汹涌', '#ff4d4d', 2.6);
+    HUD.setDifficulty(this.hell);
+  },
+
+  over(win){
+    if (this.state === 'GAMEOVER') return;
+    this.state = 'GAMEOVER';
+    Audio2.stopMusic();
+    HUD.hideLevelUp();
+    if (win){ Audio2.win(); HUD.toast('任务达成', '', '#ffcc33', 2); }
+    else {
+      Audio2.lose();
+      FX.explode(Player.x, Player.z, 0x38f0ff, 2.4);
+      World.shake(3, 1);
+      Player.group.visible = false;
+    }
+    // 留一个短促的"演出停顿"，但必须远小于自检等待窗口（胜利 800ms / 阵亡 600ms）
+    setTimeout(() => HUD.showResult(win), win ? 380 : 300);
+  },
+
+  togglePause(){
+    if (this.state === 'PLAYING'){ this.state = 'PAUSED'; HUD.el.pause.classList.remove('hide'); }
+    else if (this.state === 'PAUSED'){ this.state = 'PLAYING'; HUD.el.pause.classList.add('hide'); }
+  },
+
+  /** 从暂停或结算返回主菜单 */
+  toMenu(){
+    this.state = 'MENU';
+    Audio2.stopMusic();
+    HUD.hideLevelUp();
+    HUD.showBoss(false);
+    HUD.el.pause.classList.add('hide');
+    if (Player.group) Player.group.visible = true;
+    HUD.showMenu();
+  },
+
+  /* ---------------- 升级选卡 ---------------- */
+  openLevelUp(){
+    if (this.state !== 'PLAYING') return;
+    this.state = 'LEVELUP';
+    Progress.roll();
+    HUD.showLevelUp(Progress.cards);
+    Audio2.levelup();
+  },
+
+  pickCard(i){
+    if (this.state !== 'LEVELUP') return;
+    const c = Progress.cards[i];
+    Progress.applyCard(c);
+    Progress.pending = Math.max(0, Progress.pending - 1);
+    if (Progress.pending > 0){
+      Progress.roll();
+      HUD.showLevelUp(Progress.cards);
+    } else {
+      HUD.hideLevelUp();
+      this.state = 'PLAYING';
+    }
+  },
+
+  /* ---------------- 星域（地图）切换 ---------------- */
+  stageOf(w){
+    if (this.endless) return Math.floor((w - 1) / 2) % STAGES.length;
+    return Math.min(STAGES.length - 1, Math.floor((w - 1) / 2));
+  },
+
+  applyStage(idx, announce){
+    const st = STAGES[idx];
+    if (!st) return;
+    this.stageIdx = idx;
+    this.stageName = st.name;
+    this.stageAccent = st.accent;
+    this.stageTint = st.tint;
+    if (World.applyTheme) World.applyTheme(st);
+    if (Asteroids.retheme) Asteroids.retheme(st.aster);
+    if (Minimap.setAccent) Minimap.setAccent(st.accent);
+    if (HUD.el.sector){ HUD.el.sector.textContent = st.name; HUD.el.sector.style.color = st.accent; }
+    if (announce){
+      HUD.sectorBanner(idx, st.name, st.sub);
+      HUD.toast('进入 ' + st.name, st.sub, st.accent, 2.0);
+      Audio2.tone(Util.pick([330, 392, 440]), 0.4, 'triangle', 0.14, 520);
+    }
+  },
+
+  /* ---------------- 刷怪导演 ---------------- */
+  /** 难度曲线：多项式 + 后期指数阻尼 + 内存安全上限（替代旧纯线性） */
+  hpMulAt(w){
+    if (!this._waveCache) this._waveCache = {};
+    if (this._waveCache['h' + w] != null) return this._waveCache['h' + w];
+    const poly = 1 + 0.063 * Math.pow(w, 1.8);                 // w=10 与旧线性 (≈4.96) 对齐
+    const expo = w > 12 ? Math.exp(Math.min(3.2, (w - 12) * 0.12)) : 1;  // 后期指数阻尼，防上溢
+    const v = Math.min(900, poly * expo) * (this.endless ? 1.35 : 1) * (this.hell ? 2.2 : 1);
+    this._waveCache['h' + w] = v;
+    return v;
+  },
+
+  waveSpec(w){
+    if (!this._waveCache) this._waveCache = {};
+    if (this._waveCache[w]) return this._waveCache[w];          // 按波次缓存，去掉每帧重算
+    const kinds = STAGES[this.stageOf(w)].pool;
+    const g = (this.endless ? 1.35 : 1) * (this.hell ? 1.6 : 1);   // 无尽 / 地狱 成长更陡
+    const spec = {
+      kinds,
+      interval: Math.max(0.12, (0.95 - w * 0.065) / g) * (this.hell ? 0.62 : 1),
+      per: 1 + Math.floor(w / 2.5) + (this.hell ? 1 + Math.floor(w / 4) : 0),
+      hpMul: this.hpMulAt(w),
+      spdMul: (this.endless ? Math.min(2.2, 1 + (w - 1) * 0.06) : Math.min(1.7, 1 + (w - 1) * 0.045)) * (this.hell ? 1.3 : 1),
+      elite: w >= 3 ? Math.min(0.40, 0.02 + w * 0.012) : (this.hell ? 0.05 : 0),
+      cap: Math.min(260, 42 + w * 13 + (this.hell ? w * 20 : 0)),
+    };
+    this._waveCache[w] = spec;
+    return spec;
+  },
+
+  spawnRing(){
+    // 玩家周围环形，尽量落在场内
+    for (let i = 0; i < 8; i++){
+      const a = Math.random() * Util.TAU, r = Util.rand(31, 43);
+      const x = Player.x + Math.cos(a) * r, z = Player.z + Math.sin(a) * r;
+      if (Math.hypot(x, z) < CFG.arena - 2) return { x, z };
+    }
+    const a = Math.random() * Util.TAU;
+    return { x: Math.cos(a) * (CFG.arena - 6), z: Math.sin(a) * (CFG.arena - 6) };
+  },
+
+  director(dt){
+    const S = this.waveSpec(this.wave);
+    Enemies._curTint = this.stageTint || null;
+    this.spawnCd -= dt;
+    if (this.spawnCd > 0) return;
+    this.spawnCd = S.interval;
+    if (Enemies.pool.count >= S.cap) return;
+    // BOSS 战期间减压
+    const per = Boss.active ? Math.max(1, Math.floor(S.per * 0.4)) : S.per;
+    for (let i = 0; i < per; i++){
+      const p = this.spawnRing();
+      const kinds = (this.wave > 15) ? S.kinds.concat(['phaser','turret','sniper','bomber','weaver']) : S.kinds;
+      const kind = Util.pick(kinds);
+      const elite = Math.random() < S.elite;
+      if (kind === 'wasp'){
+        // 蜂群：一次吐一小簇，制造数量压力（精英只单只，避免过强）
+        const n = 3 + (this.wave >= 6 ? 1 : 0);
+        for (let k = 0; k < n; k++)
+          Enemies.spawn('wasp', p.x + Util.rand(-2.6, 2.6), p.z + Util.rand(-2.6, 2.6),
+            S.hpMul, S.spdMul, 1, false, this.stageTint);
+      } else {
+        Enemies.spawn(kind, p.x, p.z, S.hpMul, S.spdMul, 1, elite, this.stageTint);
+      }
+    }
+  },
+
+  /* ---------------- 帧循环 ---------------- */
+  frame(now){
+    const raw = (now - this.last) / 1000;
+    this.last = now;
+    const dt = Math.min(0.05, raw);            // 防止切后台后的巨大步长
+
+    // FPS
+    this.fpsN++; this.fpsT += raw;
+    if (this.fpsT >= 0.5){ HUD.setFps(this.fpsN / this.fpsT); this.fpsT = 0; this.fpsN = 0; }
+
+    // 主菜单：把每架飞机的 3D 造型实时渲染进选择卡片
+    if (this.state === 'MENU') HUD.renderPreviews(now);
+
+    if (this.state === 'PLAYING'){
+      this.time += dt;
+
+      // 波次推进（由时间驱动，便于外部调 time 快进）
+      const w = Math.floor(this.time / CFG.waveSec) + 1;
+      if (w !== this.wave){
+        const up = w > this.wave;
+        this.wave = w;
+        if (up){
+          HUD.waveBanner(w);
+          HUD.toast('敌军强度提升', 'WAVE ' + w, '#ffcc33', 1.1);
+          Audio2.tone(330, 0.3, 'triangle', 0.14, 520);
+          const stNow = this.stageOf(w);
+          if (stNow !== this.stageIdx) this.applyStage(stNow, true);
+          // 每波开始来一发小额补给
+          if (w % 3 === 0) Loot.dropHeal(Player.x + Util.rand(-6, 6), Player.z + Util.rand(-6, 6));
+        }
+      }
+
+      // BOSS 触发
+      const bossAt = CFG.bossWave * CFG.waveSec * (this.bossRound + 1);
+      if (!Boss.active && !this.bossSpawned && this.time >= bossAt){
+        this.bossSpawned = true;
+        Boss.spawn(this.bossRound);            // 传入轮次 → 无尽模式逐轮强化
+      }
+
+      Input.update();
+      Player.update(dt);
+      Weapons.update(dt);
+      Wingmen.update(dt);
+      Enemies.update(dt);
+      Boss.update(dt);
+      Bullets.update(dt);
+      Loot.update(dt);
+      Asteroids.update(dt);
+      this.director(dt);
+    }
+
+    // 特效/相机/UI 始终推进，暂停时画面也不僵死
+    FX.update(dt);
+    HUD.updateToast(dt);
+    World.updateCamera(dt, Player.x, Player.z);
+    World.ambT += dt;                                  // 环境动画时钟（菜单也在走）
+    if (World.stars) World.stars.rotation.y += dt * 0.004;
+    if (World.stars) World.stars.material.opacity = 0.78 + 0.16 * Math.sin(World.ambT * 0.6);
+    if (World.starBright) World.starBright.material.opacity = 0.45 + 0.35 * Math.sin(World.ambT * 1.1 + 1.3);
+    if (World.border) World.border.rotation.y += dt * 0.02;
+    if (World.borderPulse) World.borderPulse.material.opacity = 0.22 + 0.22 * Math.sin(World.ambT * 1.7);
+    if (World.nebula){ World.nebula.forEach((n, i) => {
+      n.position.x += Math.sin(World.ambT * 0.05 + i) * 0.02;
+      n.rotation.z += dt * 0.01;
+      n.material.opacity = n.userData.bop * (0.78 + 0.22 * Math.sin(World.ambT * 0.3 + i * 1.3));
+    }); }
+    if (World.scan) World.scan.rotation.z += dt * 0.5;
+    if (World.comets) World.comets.forEach(c => {
+      const u = c.userData; u.a += u.sp * dt;
+      c.position.set(Math.cos(u.a) * u.r, u.y, Math.sin(u.a) * u.r);
+      c.lookAt(0, u.y, 0);
+      c.material.opacity = 0.3 + 0.22 * (0.5 + 0.5 * Math.sin(World.ambT * 1.3 + u.a * 2));
+    });
+    Minimap.render();
+    HUD.update();
+
+    World.renderer.render(World.scene, World.camera);
+  },
+
+  /** 无尽模式下击破 BOSS 后进入下一轮 */
+  nextBossRound(){
+    this.bossRound++;
+    this.bossSpawned = false;
+  },
+};
+
+/* ============================ 启动 ============================ */
+function boot(){
+  if (typeof THREE === 'undefined'){
+    document.getElementById('boot').textContent = 'three.js 加载失败 · 请检查网络后刷新';
+    return;
+  }
+  try {
+    Game.init();
+  } catch (err){
+    document.getElementById('boot').classList.remove('hide');
+    document.getElementById('boot').textContent = '初始化失败：' + err.message;
+    throw err;
+  }
+}
+
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+else boot();
+
