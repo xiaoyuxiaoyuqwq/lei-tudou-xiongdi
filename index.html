@@ -4,6 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
 <title>星陨幸存者 · STELLAR SURVIVORS</title>
+<script>
+/* 全局错误捕获：把任何运行错误（含渲染循环中的）显示在屏幕上，便于无控制台时定位 */
+(function(){
+  function showErr(msg){
+    var b=document.getElementById('boot');
+    if(!b){ b=document.createElement('div'); b.id='boot'; document.body.appendChild(b); }
+    b.className='';
+    b.style.cssText='position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(5,7,15,.96);color:#ff8a8a;font:13px/1.6 monospace;white-space:pre-wrap;overflow:auto';
+    b.textContent='⚠ 运行错误（请把这段发给我）：\n\n'+msg;
+  }
+  window.addEventListener('error', function(e){ showErr((e.message||'error')+(e.error&&e.error.stack?'\n\n'+e.error.stack:'')); });
+  window.addEventListener('unhandledrejection', function(e){ showErr('Promise 拒绝: '+(e.reason&&e.reason.message?e.reason.message:e.reason)); });
+})();
+</script>
 <style>
   :root{
     --cy:#38f0ff; --cy2:#0ad; --mg:#ff3d7f; --gd:#ffcc33; --gn:#5dff9b;
@@ -39,6 +53,29 @@
   #btnHell{border-color:rgba(255,77,77,.55);color:#ff8a8a;
     background:linear-gradient(180deg,rgba(255,77,77,.20),rgba(255,77,77,.07))}
   #btnHell:hover{box-shadow:0 0 16px rgba(255,77,77,.45);color:#fff}
+  #btnSpace{border-color:rgba(90,170,255,.55);color:#8fc6ff;
+    background:linear-gradient(180deg,rgba(20,44,82,.5),rgba(12,26,52,.4))}
+  #btnSpace:hover{box-shadow:0 0 16px rgba(90,170,255,.5);color:#fff}
+  /* 太空战指挥技能栏 */
+  #cmdBar{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);display:flex;gap:10px;align-items:center;z-index:22;flex-wrap:wrap;justify-content:center;max-width:96vw}
+  #cmdBar.hide{display:none}
+  #cmdPts{font:700 13px/1 'Segoe UI',sans-serif;color:#ffd24d;background:rgba(10,16,28,.7);border:1px solid #ffd24d55;border-radius:8px;padding:8px 12px;letter-spacing:1px;white-space:nowrap}
+  .cmd .cc{position:absolute;top:2px;right:4px;font:700 10px/1 'Segoe UI',sans-serif;color:#9fe8ff;opacity:.85}
+  .cmd.poor{opacity:.4;filter:grayscale(.6)}
+  #ewarTint{position:fixed;inset:0;z-index:18;pointer-events:none;background:radial-gradient(circle at 50% 50%,transparent 30%,rgba(140,60,200,.32) 100%);mix-blend-mode:screen;transition:opacity .25s;opacity:0}
+  #ewarTint.on{opacity:1}
+  .cmd{position:relative;width:96px;height:62px;border-radius:12px;overflow:hidden;cursor:pointer;
+    border:1px solid rgba(90,170,255,.5);background:linear-gradient(180deg,rgba(16,38,72,.7),rgba(9,20,42,.7));
+    color:#cfe6ff;font-family:inherit;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px}
+  .cmd:hover{box-shadow:0 0 14px rgba(90,170,255,.5)}
+  .cmd .ck{position:absolute;top:4px;left:6px;font-size:12px;opacity:.7;border:1px solid rgba(255,255,255,.25);
+    border-radius:4px;padding:0 4px;line-height:15px}
+  .cmd .cn{font-size:14px;font-weight:700}
+  .cmd .cdc{position:absolute;left:0;bottom:0;width:100%;height:0;background:rgba(0,0,0,.6);transition:height .08s linear}
+  .cmd .cdt{position:absolute;right:6px;bottom:3px;font-size:13px;font-weight:700;color:#ffd24a}
+  .cmd.cd{opacity:.65}
+  .cmd.fire{animation:cmdFire .18s ease}
+  @keyframes cmdFire{0%{box-shadow:0 0 22px rgba(120,220,255,.9)}100%{box-shadow:0 0 0 rgba(120,220,255,0)}}
   #topRight{margin-left:auto;display:flex;gap:10px}
   #minimap{position:absolute;right:14px;bottom:14px;width:150px;height:150px;z-index:20;
     border-radius:50%;pointer-events:none;
@@ -85,6 +122,37 @@
     box-shadow:0 0 14px rgba(77,210,255,.5);transition:width .18s ease-out}
   #hpTxt2{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
     font-size:10px;font-weight:700;letter-spacing:.08em;text-shadow:0 1px 3px #000;color:#e2f8ff}
+
+  /* 母舰血条（太空战）：青色旗舰风 */
+  #hpWrap.mother{border-color:rgba(56,240,255,.55);box-shadow:0 0 18px rgba(56,240,255,.3)}
+  #hpWrap.mother #hpBar{background:linear-gradient(90deg,#0e7d9a,#38f0ff 70%,#bdf3ff);
+    box-shadow:0 0 18px rgba(56,240,255,.6)}
+
+  /* ---------- 太空战：四方兵力条（残骸/虚空/深渊/我方）---------- */
+  #forceBar{position:absolute;top:54px;left:50%;transform:translateX(-50%);z-index:21;display:flex;gap:7px;
+    background:rgba(4,10,20,.55);padding:6px 10px;border-radius:12px;border:1px solid rgba(120,160,200,.22);
+    box-shadow:0 0 18px rgba(0,0,0,.4);pointer-events:none}
+  #forceBar .fc{display:flex;align-items:center;gap:6px;font-size:11px}
+  #forceBar .fc i{width:42px;height:9px;border-radius:5px;display:block;transition:width .3s ease-out}
+  #forceBar .fc b{font-variant-numeric:tabular-nums;font-size:12px;min-width:20px;text-align:right;text-shadow:0 1px 2px #000}
+  #forceBar .fc span{color:var(--dim);font-size:10px;letter-spacing:.06em}
+  #forceBar .scrap i{background:#ff7a4d;box-shadow:0 0 9px #ff7a4d}
+  #forceBar .void  i{background:#b060ff;box-shadow:0 0 9px #b060ff}
+  #forceBar .abyss i{background:#ff5c6e;box-shadow:0 0 9px #ff5c6e}
+  #forceBar .me    i{background:#38f0ff;box-shadow:0 0 9px #38f0ff}
+
+  /* 太空战：舰种图例（六种舰型，仅太空战显示） */
+  #shipLegend{position:absolute;top:92px;left:50%;transform:translateX(-50%);z-index:21;display:flex;gap:14px;flex-wrap:wrap;justify-content:center;
+    background:rgba(4,10,20,.5);padding:5px 12px;border-radius:10px;border:1px solid rgba(120,160,200,.18);pointer-events:none;max-width:94vw}
+  #shipLegend .lg{display:flex;align-items:center;gap:5px;font-size:10px;color:#cfe3f2;letter-spacing:.03em}
+  #shipLegend .lg b{color:#fff;font-size:10px;font-weight:700}
+  #shipLegend .lg i{width:9px;height:9px;border-radius:50%;display:block;flex:none}
+  #shipLegend .lg.scrap i{background:#ff7a4d;box-shadow:0 0 7px #ff7a4d}
+  #shipLegend .lg.void  i{background:#b060ff;box-shadow:0 0 7px #b060ff}
+  #shipLegend .lg.cruiser i{background:#ffd24d;box-shadow:0 0 7px #ffd24d}
+  #shipLegend .lg.abyss i{background:#ff5c6e;box-shadow:0 0 7px #ff5c6e}
+  #shipLegend .lg.cap i{background:#8fa0b8;box-shadow:0 0 7px #8fa0b8}
+  #shipLegend .lg.sup i{background:#5dffd0;box-shadow:0 0 7px #5dffd0}
 
   /* ---------- BOSS 血条 ---------- */
   #bossBar{position:absolute;top:78px;left:50%;transform:translateX(-50%);width:min(620px,72vw);
@@ -326,6 +394,24 @@
   </div>
 </div>
 
+<!-- 太空战：四方兵力条（残骸/虚空/深渊/我方），仅太空战显示 -->
+<div id="forceBar" class="hide">
+  <div class="fc scrap"><i id="fbScrap"></i><b id="fbScrapN">0</b><span>残骸</span></div>
+  <div class="fc void"><i id="fbVoid"></i><b id="fbVoidN">0</b><span>虚空</span></div>
+  <div class="fc abyss"><i id="fbAbyss"></i><b id="fbAbyssN">0</b><span>深渊</span></div>
+  <div class="fc me"><i id="fbMe"></i><b id="fbMeN">0</b><span>我方</span></div>
+</div>
+
+<!-- 太空战：舰种图例（六种舰型分层，仅太空战显示） -->
+<div id="shipLegend" class="hide">
+  <div class="lg scrap"><i></i><b>护卫舰</b>炮灰/骚扰</div>
+  <div class="lg void"><i></i><b>驱逐舰</b>护航/反小舰</div>
+  <div class="lg cruiser"><i></i><b>巡洋舰</b>中坚/可修</div>
+  <div class="lg abyss"><i></i><b>战列舰</b>重炮肉盾</div>
+  <div class="lg cap"><i></i><b>航母</b>放舰载机</div>
+  <div class="lg sup"><i></i><b>支援舰</b>修友军</div>
+</div>
+
 <!-- BOSS -->
 <div id="bossBar" class="hide">
   <div id="bossName">■ 深渊母舰 NYX-Ω ■</div>
@@ -355,12 +441,27 @@
   <div><kbd>空格</kbd> 冲刺　<kbd>F</kbd> 阵型　<kbd>P</kbd> 暂停</div>
 </div>
 
+<!-- 太空战指挥技能栏（仅太空战模式显示） -->
+<div id="cmdBar" class="hide">
+  <div id="cmdPts" class="cmdpts">军功 0</div>
+  <button class="cmd" id="cmd0"><span class="ck">Q</span><span class="cn">出击波次</span><em class="cc">免费</em><i class="cdc"></i><b class="cdt"></b></button>
+  <button class="cmd" id="cmd1"><span class="ck">E</span><span class="cn">干扰爆发</span><em class="cc">免费</em><i class="cdc"></i><b class="cdt"></b></button>
+  <button class="cmd" id="cmd2"><span class="ck">R</span><span class="cn">维修场</span><em class="cc">免费</em><i class="cdc"></i><b class="cdt"></b></button>
+  <button class="cmd" id="cmd3"><span class="ck">Z</span><span class="cn">突击机群</span><em class="cc">18</em><i class="cdc"></i><b class="cdt"></b></button>
+  <button class="cmd" id="cmd4"><span class="ck">X</span><span class="cn">拦截机群</span><em class="cc">14</em><i class="cdc"></i><b class="cdt"></b></button>
+  <button class="cmd" id="cmd5"><span class="ck">C</span><span class="cn">维修舰</span><em class="cc">22</em><i class="cdc"></i><b class="cdt"></b></button>
+  <button class="cmd" id="cmd6"><span class="ck">V</span><span class="cn">护卫舰</span><em class="cc">45</em><i class="cdc"></i><b class="cdt"></b></button>
+</div>
+
+<!-- 电子战干扰层（虚空阵营干扰玩家母舰时显示） -->
+<div id="ewarTint" class="hide"></div>
+
 <!-- 升级 -->
 <div id="levelup" class="hide">
   <div id="luTitle">
     <div class="a">LEVEL UP</div>
     <div class="b" id="luLv">LV.2</div>
-    <div class="c">选择一项强化 · 战斗已暂停</div>
+    <div class="c" id="luSub">选择一项强化 · 战斗已暂停</div>
   </div>
   <div id="cards"></div>
   <div id="luFoot">按 1 / 2 / 3 快速选择</div>
@@ -439,6 +540,9 @@
   </div>
   <div id="btnRow">
     <button class="btn coop" id="btnCoop">👥 双人模式</button>
+    <button class="btn space" id="btnSpace">🚢 舰队指挥</button>
+    <button class="btn space" id="btnArena">✈ 缠斗空战<small style="opacity:.6;font-size:9px"> ·开发中</small></button>
+    <button class="btn space" id="btnCampaign">🌌 星图战役<small style="opacity:.6;font-size:9px"> ·开发中</small></button>
     <button class="btn" id="btnStart">开始任务</button>
     <button class="btn" id="btnHell">🔥 地狱模式</button>
     <button class="btn ghost hide" id="btnEndless">无尽模式</button>
@@ -1516,6 +1620,16 @@ const World = {
     if (this.nebula) for (const m of this.nebula) m.material.color.copy(accent);
   },
 
+  /** 太空幸存者：开关「地面战术网格」。关掉后呈现开放星域，突出星空/星云背景 */
+  setSpaceMode(on){
+    this.spaceMode = !!on;
+    const ground = !on;
+    if (this.grid1)     this.grid1.visible = ground;
+    if (this.grid2)     this.grid2.visible = ground;
+    if (this.floorGlow) this.floorGlow.visible = ground;
+    if (this.scan)      this.scan.visible = ground;
+  },
+
   /** 世界坐标 → 屏幕像素（伤害数字用） */
   _v: null,
   toScreen(x, y, z){
@@ -1548,6 +1662,16 @@ const Input = {
       if (e.code === 'ShiftLeft' || e.code === 'ShiftRight'){ this.dashQueuedP2 = true; e.preventDefault(); }
       if (e.code === b.pause || e.code === 'Escape') Game.togglePause();
       if (e.code === b.form) Wingmen.cycleFormation();
+      if (Game.state === 'PLAYING'){
+        if (e.code === 'KeyQ') Commands.use('sortie');
+        if (e.code === 'KeyE') Commands.use('jam');
+        if (e.code === 'KeyR') Commands.use('repair');
+        // 军功呼叫舰船支援（仿市面太空战：根据分数调遣不同舰种）
+        if (e.code === 'KeyZ') Commands.use('call_striker');
+        if (e.code === 'KeyX') Commands.use('call_interceptor');
+        if (e.code === 'KeyC') Commands.use('call_medic');
+        if (e.code === 'KeyV') Commands.use('call_cruiser');
+      }
       if (Game.state === 'LEVELUP'){
         if (e.code === 'Digit1') Game.pickCard(0);
         if (e.code === 'Digit2') Game.pickCard(1);
@@ -1557,6 +1681,26 @@ const Input = {
     });
     addEventListener('keyup', (e) => { this.keys[e.code] = false; });
     addEventListener('blur', () => { this.keys = {}; this.capturing = null; this._onRebind = null; });
+    // 点击战场锁定集火目标（仅太空战）——点哪个敌人，友军优先打哪个
+    addEventListener('pointerdown', (ev) => {
+      if (Game.mode !== 'space' || Game.state !== 'PLAYING') return;
+      const cv = (typeof World !== 'undefined' && World.renderer) ? World.renderer.domElement : null;
+      if (!cv || ev.target !== cv) return;          // 只响应点游戏画面，不响应 UI 按钮
+      const rect = cv.getBoundingClientRect();
+      const nx = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      const ny = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
+      const v = new THREE.Vector3(nx, ny, 0.5).unproject(World.camera);
+      const dir = v.sub(World.camera.position).normalize();
+      const th = Math.abs(dir.y) > 1e-4 ? -World.camera.position.y / dir.y : 0;
+      const wx = World.camera.position.x + dir.x * th;
+      const wz = World.camera.position.z + dir.z * th;
+      let best = null, bd = 32 * 32;
+      const act = Enemies.pool.active;
+      for (let i = 0; i < act.length; i++){ const e = act[i]; if (!e.alive) continue; const d = Util.dist2(wx, wz, e.x, e.z); if (d < bd){ bd = d; best = e; } }
+      Game.focus = best;
+      if (best) HUD.toast('集火锁定', (best.kind || '敌舰'), '#ffcc33', 0.8);
+      else HUD.toast('取消集火', '', '#9fb3c8', 0.6);
+    });
   },
   update(){
     const k = this.keys, b = Settings.binds;
@@ -1699,6 +1843,8 @@ const Audio2 = {
   spreadShot(){ this.noise(0.1, 0.16, 2400); this.tone(Util.rand(360, 440), 0.06, 'square', 0.045, 150); },
   sawWhirl(){ this.tone(150, 0.14, 'sawtooth', 0.08, 240); this.tone(900, 0.05, 'square', 0.03, 1300); },
   chainZap(){ this.tone(Util.rand(1400, 1800), 0.05, 'square', 0.04, 600); this.noise(0.06, 0.1, 5200); },
+  cmd(){ this.tone(560, 0.12, 'triangle', 0.08, 820); this.tone(840, 0.1, 'sine', 0.05, 1300); },
+  fleet(){ [330, 392, 494, 392].forEach((f, i) => setTimeout(() => this.tone(f, 0.2, 'sawtooth', 0.12, 700), i * 95)); this.noise(0.32, 0.22, 600); },
   novaBurst(){ this.boom(); this.tone(220, 0.5, 'sawtooth', 0.08, 880); },
   droneBlip(){ this.tone(Util.rand(1100, 1300), 0.05, 'sine', 0.05, 1700); },
 
@@ -2281,6 +2427,8 @@ function makePlayer(opts){
   get pickR(){ return CFG.pickRadius * (1 + this.progress.p('pick') * 0.34); },
 
   update(dt){
+    if (this.jamT > 0) this.jamT -= dt;                 // 电子战干扰倒计时
+    const jamK = this.jamT > 0 ? 0.5 : 1;              // 被干扰时机动减半
     if (this.buffs.overdrive > 0) this.buffs.overdrive -= dt;
     if (this.buffs.engine > 0) this.buffs.engine -= dt;
     if (this.poisonT > 0 && (typeof Game === 'undefined' || Game.state === 'PLAYING')){
@@ -2302,16 +2450,16 @@ function makePlayer(opts){
 
     if (this.dashT > 0){
       this.dashT -= dt;
-      this.vx = this.dashDX * CFG.player.dashSpd;
-      this.vz = this.dashDZ * CFG.player.dashSpd;
+      this.vx = this.dashDX * CFG.player.dashSpd * (this._spaceMove || 1) * jamK;
+      this.vz = this.dashDZ * CFG.player.dashSpd * (this._spaceMove || 1) * jamK;
       // 残影
       if (Math.random() < 0.7)
         FX.particle(this.x, 0.9, this.z, 0x38f0ff,
           { life: 0.3, s0: 0.6, s1: 0, drag: 6 });
     } else {
-      const spd = this.speed;
+      const spd = this.speed * (this._spaceMove || 1) * jamK;
       const tx = ip.ax * spd, tz = ip.az * spd;
-      const acc = (ip.ax || ip.az) ? CFG.player.accel : CFG.player.drag;
+      const acc = ((ip.ax || ip.az) ? CFG.player.accel : CFG.player.drag) * (this._spaceAccel || 1);
       const k = 1 - Math.exp(-acc * dt);
       this.vx += (tx - this.vx) * k;
       this.vz += (tz - this.vz) * k;
@@ -2462,7 +2610,7 @@ const Bullets = {
     // 纯数据池（无 mesh，渲染交给 InstancedMesh 统一写矩阵）
     this.pPool = Pool.create(420, () => ({ x:0, z:0, y:1, vx:0, vz:0, dmg:0, life:0,
       max:2, pierce:0, r:0.4, crit:false, target:null, turn:0, splash:0, hitSet:null,
-      frost:false, color:0x9df6ff, long:1, sc:1 }));
+      frost:false, color:0x9df6ff, long:1, sc:1, dtype:null }));
     this.ePool = Pool.create(300, () => ({ x:0, z:0, y:0.9, vx:0, vz:0, dmg:0, life:0,
       max:4.5, r:0.42, pierce:0, color:0xff5c7a, sc:1 }));
 
@@ -2489,7 +2637,9 @@ const Bullets = {
     if (!o.hitSet) o.hitSet = new Set(); else o.hitSet.clear();
     o.sc = q.scale || 1; o.long = q.long || 1;
     o.frost = !!q.frost;
+    o.dtype = q.dtype;   // 太空战双伤害：能量武器标记，命中时传给 Enemies.damage
     o.color = q.color || (q.crit ? 0xffcc33 : 0x9df6ff);
+    o.fac = 'player';
     return o;
   },
 
@@ -2510,6 +2660,7 @@ const Bullets = {
     o.mesh.material.color.setHex(o.color);
     o.mesh.position.set(o.x, o.y, o.z);
     o.mesh.visible = true;
+    o.dtype = q.dtype;   // 太空战双伤害：导弹也携带武器伤害类型
     return o;
   },
 
@@ -2523,6 +2674,7 @@ const Bullets = {
     o.life = 0; o.max = q.life || 4.5;
     o.r = q.r || 0.42; o.pierce = 0;
     o.sc = q.scale || 1; o.color = q.color || 0xff5c7a;
+    o.fac = q.fac || 'hostile';
     return o;
   },
 
@@ -2541,7 +2693,7 @@ const Bullets = {
         if (b.hitSet.has(e._pi)) continue;
         b.hitSet.add(e._pi);
         if (b.frost){ e.frostLv = Math.min(3, (e.frostLv || 0) + 1); e.frostT = 0.5; }
-        Enemies.damage(e, b.dmg, b.crit, b.x, b.z);
+        Enemies.damage(e, b.dmg, b.crit, b.x, b.z, true, b.dtype);
         if (b.slow) Enemies.slow(e, b.slow, b.slowK);   // 离子干扰炮：命中减速
         if (b.splash > 0) Enemies.splash(b.x, b.z, b.splash, b.dmg * 0.55, false);
         if (b.pierce-- <= 0){ FX.hitSpark(b.x, b.z, b.color, b.y); return true; }
@@ -2585,6 +2737,7 @@ const Bullets = {
       if (Math.hypot(b.x, b.z) > CFG.arena + 10) return true;
       if (Math.random() < 0.85)
         FX.particle(b.x, b.y, b.z, b.color, { life: 0.2, s0: b.r * 0.75, s1: 0, drag: 3.5 });
+      // 太空幸存者：敌弹与幸存者一致，命中玩家战机
       let hitP = null;
       for (const p of Game.alivePlayers()){
         if (Util.dist2(b.x, b.z, p.x, p.z) < (b.r + CFG.player.radius) ** 2){ hitP = p; break; }
@@ -2627,7 +2780,7 @@ const Bullets = {
     FX.explode(b.x, b.z, 0xff9a3d, 0.85);
     Audio2.hit();
     World.shake(0.35, 0.14);
-    Enemies.splash(b.x, b.z, b.splash, b.dmg, b.crit);
+    Enemies.splash(b.x, b.z, b.splash, b.dmg, b.crit, b.dtype);
     if (Boss.active && Boss.hitTest(b.x, b.z, b.splash)) Boss.damage(b.dmg, b.crit, b.x, b.z);
   },
 
@@ -3099,6 +3252,32 @@ const Weapons = {
     return best;
   },
 
+  /* 太空战武器分类（仅太空战生效，幸存者零改动）：
+   * dtype:    energy=能量武器(忽略护甲、对护盾1.6倍效率) / kinetic=实弹(先破甲再破盾)
+   * ballistic: arcing=曲射(优先打大舰/后排,逼出混合舰队) / direct=直射(打最近)
+   * 在 TABLE 数值表上盖章，避免逐个改 30+ 调用点。 */
+  _stampWeapons(){
+    const ENERGY = new Set(['laser','rail','frost','ion','photon','lance','pulsar','chain','tractor','rotor','storm','scatter']);
+    const ARCING = new Set(['rail','meteor','lance','pulsar','siege','photon','blackhole','swarm','frost']);
+    for (const k in this.TABLE){
+      const arr = this.TABLE[k];
+      for (const s of arr){ s.dtype = ENERGY.has(k) ? 'energy' : 'kinetic'; s.ballistic = ARCING.has(k) ? 'arcing' : 'direct'; }
+    }
+  },
+
+  // 太空战：曲射武器优先锁定的「大舰/后排」目标（旗舰/主力舰等 isCapital）
+  capitalTarget(){
+    if (Game.mode !== 'space') return null;
+    let best = null, bd = 70 * 70;
+    const list = Enemies.pool.active;
+    for (let i = 0; i < list.length; i++){
+      const e = list[i]; if (!e.alive || !e.isCapital) continue;
+      const d = Util.dist2(this._owner.x, this._owner.z, e.x, e.z);
+      if (d < bd){ bd = d; best = e; }
+    }
+    return best;
+  },
+
   acquire(){
     if (Boss.active && !Boss.entering){
       const d = Math.hypot(Boss.x - this._owner.x, Boss.z - this._owner.z);
@@ -3217,7 +3396,7 @@ const Weapons = {
         const S = this.TABLE.laser[ll - 1];
         this.cd.laser = S.cd * rm;
         // 取最近的 n 个目标各来一发贯穿光束
-        const targets = this.pickTargets(S.n);
+        const targets = this.pickTargets(S.n, S.ballistic);
         for (const tg of targets) this.beam(tg, S, ll);
         Audio2.laser();
       }
@@ -3343,7 +3522,7 @@ const Weapons = {
           if (!cur || !cur.alive) break;
           const crit = this.rollCrit();
           const dmg = S.dmg * (crit ? this.critMul() : 1);
-          Enemies.damage(cur, dmg, crit, cur.x, cur.z);
+          Enemies.damage(cur, dmg, crit, cur.x, cur.z, false, S.dtype);
           pts.push({x: cur.x, z: cur.z});
           prev = cur;
           cur = this._chainNext(cur.x, cur.z, S.range, prev);
@@ -3494,10 +3673,11 @@ const Weapons = {
       if (this.cd.rail <= 0 && T){
         const S = this.TABLE.rail[rl - 1];
         this.cd.rail = S.cd * rm;
-        const dir = Math.atan2(T.x - this._owner.x, T.z - this._owner.z);
+        const _t = (Game.mode === 'space' && S.ballistic === 'arcing') ? (this.capitalTarget() || T) : T;
+        const dir = Math.atan2(_t.x - this._owner.x, _t.z - this._owner.z);
         const crit = this.rollCrit();
         Bullets.fire(this._owner.x, this._owner.z, dir, S.spd, S.dmg * (crit ? this.critMul() : 1),
-          { pierce: S.pierce, crit, color: crit ? 0xffcc33 : 0x9df6ff, scale: 1.4, life: 2.4, long: 3.2, y: 1.0 });
+          { pierce: S.pierce, crit, color: crit ? 0xffcc33 : 0x9df6ff, scale: 1.4, life: 2.4, long: 3.2, y: 1.0, dtype: S.dtype });
         FX.ring(this._owner.x, this._owner.z, 0x9df6ff, 3, 0.18);
         Audio2.rail();
       }
@@ -3604,13 +3784,14 @@ const Weapons = {
       if (this.cd.frost <= 0 && T){
         const S = this.TABLE.frost[fr - 1];
         this.cd.frost = S.cd * rm;
-        const base = Math.atan2(T.x - this._owner.x, T.z - this._owner.z);
+        const _t = (Game.mode === 'space' && S.ballistic === 'arcing') ? (this.capitalTarget() || T) : T;
+        const base = Math.atan2(_t.x - this._owner.x, _t.z - this._owner.z);
         for (let i = 0; i < S.n; i++){
           const off = (i - (S.n - 1) / 2) * 0.12;
           const crit = this.rollCrit();
           const dmg = S.dmg * (crit ? this.critMul() : 1);
           Bullets.fire(this._owner.x + Math.sin(base) * 1.2, this._owner.z + Math.cos(base) * 1.2,
-            base + off, 58, dmg, { pierce: S.pierce, crit, long: 1.2, color: 0x7fe6ff, life: 1.1, frost: true });
+            base + off, 58, dmg, { pierce: S.pierce, crit, long: 1.2, color: 0x7fe6ff, life: 1.1, frost: true, dtype: S.dtype });
         }
         Audio2.frostZap();
       }
@@ -3622,8 +3803,9 @@ const Weapons = {
       if (this.cd.meteor <= 0){
         const S = this.TABLE.meteor[mt - 1];
         this.cd.meteor = S.cd * rm;
-        let tx = T ? T.x : this._owner.x, tz = T ? T.z : this._owner.z;
-        if (!T){ const near = this.nearestTo(this._owner.x, this._owner.z, 60); if (near){ tx = near.x; tz = near.z; } }
+        let _t = (Game.mode === 'space' && S.ballistic === 'arcing') ? (this.capitalTarget() || T) : T;
+        let tx = _t ? _t.x : this._owner.x, tz = _t ? _t.z : this._owner.z;
+        if (!_t){ const near = this.nearestTo(this._owner.x, this._owner.z, 60); if (near){ tx = near.x; tz = near.z; } }
         const geo = Asteroids.geos[Math.floor(Math.random() * Asteroids.geos.length)];
         const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: 0x9a8f80 }));
         mesh.position.set(tx, 22, tz); World.scene.add(mesh);
@@ -3639,7 +3821,7 @@ const Weapons = {
       if (this.cd.swarm <= 0 && T){
         const S = this.TABLE.swarm[sw - 1];
         this.cd.swarm = S.cd * rm;
-        const tgs = this.pickTargets(S.n);
+        const tgs = this.pickTargets(S.n, S.ballistic);
         for (let i = 0; i < S.n; i++){
           const crit = this.rollCrit();
           const tg = tgs[i] || T;
@@ -3664,7 +3846,7 @@ const Weapons = {
           const crit = this.rollCrit();
           const dmg = S.dmg * (crit ? this.critMul() : 1);
           this._chainBeam({ x: e.x, z: e.z, sky: true }, e);
-          Enemies.damage(e, dmg, crit, e.x, e.z);
+          Enemies.damage(e, dmg, crit, e.x, e.z, false, S.dtype);
         }
         if (S.strikes > 0) Audio2.stormCrack();
       }
@@ -3693,8 +3875,9 @@ const Weapons = {
       if (this.cd.blackhole <= 0 && (Enemies.pool.active.length > 0 || Boss.active)){
         const S = this.TABLE.blackhole[bh - 1];
         this.cd.blackhole = 6.5 * rm;
-        let bx = T ? T.x : this._owner.x, bz = T ? T.z : this._owner.z;
-        if (!T){ const near = this.nearestTo(this._owner.x, this._owner.z, 60); if (near){ bx = near.x; bz = near.z; } }
+        let _t = (Game.mode === 'space' && S.ballistic === 'arcing') ? (this.capitalTarget() || T) : T;
+        let bx = _t ? _t.x : this._owner.x, bz = _t ? _t.z : this._owner.z;
+        if (!_t){ const near = this.nearestTo(this._owner.x, this._owner.z, 60); if (near){ bx = near.x; bz = near.z; } }
         const g = new THREE.Group();
         const eh = new THREE.Mesh(new THREE.SphereGeometry(1.15, 16, 12),
           new THREE.MeshBasicMaterial({ color: 0x05030a, transparent: true, opacity: 0.96 }));
@@ -3755,7 +3938,8 @@ const Weapons = {
       if (this.cd.photon <= 0 && T){
         const S = this.TABLE.photon[pt - 1];
         this.cd.photon = S.cd * rm;
-        const base = Math.atan2(T.x - this._owner.x, T.z - this._owner.z);
+        const _t = (Game.mode === 'space' && S.ballistic === 'arcing') ? (this.capitalTarget() || T) : T;
+        const base = Math.atan2(_t.x - this._owner.x, _t.z - this._owner.z);
         for (let i = 0; i < S.n; i++){
           const a = base + (i - (S.n - 1) / 2) * 0.4;
           const mesh = new THREE.Mesh(this.photonGeo, new THREE.MeshBasicMaterial({
@@ -3820,7 +4004,7 @@ const Weapons = {
         if (d > S.r) continue;
         if (d > 3){ const f = Math.min(d - 3, S.pull * dt); e.x += dx / d * f; e.z += dz / d * f; }
         e.slowT = 0.2; e.slowK = Math.max(e.slowK, 0.3);
-        Enemies.damage(e, S.dps * dt, false, e.x, e.z, false);
+        Enemies.damage(e, S.dps * dt, false, e.x, e.z, false, S.dtype);
       }
       if (Math.random() < 0.5){
         const a = Math.random() * Util.TAU, rr = S.r * Util.rand(0.5, 1);
@@ -3851,7 +4035,7 @@ const Weapons = {
             if (hits.length){
               rn.cd = 0.22;
               const crit = this.rollCrit();
-              for (const e of hits) Enemies.damage(e, S.dmg * (crit ? this.critMul() : 1), crit, e.x, e.z);
+              for (const e of hits) Enemies.damage(e, S.dmg * (crit ? this.critMul() : 1), crit, e.x, e.z, false, S.dtype);
               FX.hitSpark(rx, rz, 0xffd95c, 1.0);
             }
           }
@@ -3992,7 +4176,8 @@ const Weapons = {
       const S = this.TABLE.lance[lcl - 1];
       if (this.lanceCharging){
         this.lanceChargeT -= dt;
-        this.lanceAim = T ? Math.atan2(T.x - this._owner.x, T.z - this._owner.z) : this._owner.yaw;
+        const _lt = (Game.mode === 'space' && S.ballistic === 'arcing') ? (this.capitalTarget() || T) : T;
+        this.lanceAim = _lt ? Math.atan2(_lt.x - this._owner.x, _lt.z - this._owner.z) : this._owner.yaw;
         // 蓄力指示：长矛沿瞄准方向显形，不透明度随蓄力增长
         this.lanceMesh.visible = true;
         this.lanceMesh.position.set(this._owner.x, 1.1, this._owner.z);
@@ -4007,7 +4192,7 @@ const Weapons = {
           const dmg = S.dmg * (crit ? this.critMul() : 1);
           Bullets.fire(this._owner.x + Math.sin(this.lanceAim) * 1.4, this._owner.z + Math.cos(this.lanceAim) * 1.4,
             this.lanceAim, S.spd, dmg,
-            { pierce: S.pierce, crit, color: 0xbfe9ff, scale: 1.7, life: 1.5, long: 2.6 });
+            { pierce: S.pierce, crit, color: 0xbfe9ff, scale: 1.7, life: 1.5, long: 2.6, dtype: S.dtype });
           FX.ring(this._owner.x + Math.sin(this.lanceAim) * 1.6, this._owner.z + Math.cos(this.lanceAim) * 1.6, 0xbfe9ff, 2.6, 0.22);
           FX.burst(this._owner.x + Math.sin(this.lanceAim) * 2, this._owner.z + Math.cos(this.lanceAim) * 2, 0xbfe9ff, 6, 5, 1.2);
           Audio2.lance();
@@ -4027,7 +4212,8 @@ const Weapons = {
       const S = this.TABLE.pulsar[plr - 1];
       if (this.pulsarCharging){
         this.pulsarChargeT -= dt;
-        this.pulsarAim = T ? Math.atan2(T.x - this._owner.x, T.z - this._owner.z) : this._owner.yaw;
+        const _pt = (Game.mode === 'space' && S.ballistic === 'arcing') ? (this.capitalTarget() || T) : T;
+        this.pulsarAim = _pt ? Math.atan2(_pt.x - this._owner.x, _pt.z - this._owner.z) : this._owner.yaw;
         if (this.pulsarChargeT <= 0){
           this.pulsarCharging = false;
           this.cd.pulsar = S.cd * rm;
@@ -4035,7 +4221,7 @@ const Weapons = {
           const dmg = S.dmg * (crit ? this.critMul() : 1);
           Bullets.fire(this._owner.x + Math.sin(this.pulsarAim) * 1.4, this._owner.z + Math.cos(this.pulsarAim) * 1.4,
             this.pulsarAim, S.spd, dmg,
-            { pierce: 999, crit, color: 0x7df0ff, scale: 1.9, life: 0.85, long: 3.0 });
+            { pierce: 999, crit, color: 0x7df0ff, scale: 1.9, life: 0.85, long: 3.0, dtype: S.dtype });
           FX.ring(this._owner.x + Math.sin(this.pulsarAim) * 1.8, this._owner.z + Math.cos(this.pulsarAim) * 1.8, 0x7df0ff, 3, 0.3);
           FX.burst(this._owner.x + Math.sin(this.pulsarAim) * 2.2, this._owner.z + Math.cos(this.pulsarAim) * 2.2, 0x7df0ff, 8, 6, 1.2);
           Audio2.pulsarShot();
@@ -4091,7 +4277,7 @@ const Weapons = {
           const a = base + (i / (S.n - 1) - 0.5) * spread;
           Bullets.fire(this._owner.x + Math.sin(a) * 1.1, this._owner.z + Math.cos(a) * 1.1,
             a, S.spd, S.dmg * (crit ? this.critMul() : 1),
-            { crit, color: 0xa8e6ff, scale: 0.7, life: 1.1 });
+            { crit, color: 0xa8e6ff, scale: 0.7, life: 1.1, dtype: S.dtype });
         }
         FX.ring(this._owner.x, this._owner.z, 0xa8e6ff, 2.2, 0.2);
         Audio2.scatterShot();
@@ -4112,22 +4298,24 @@ const Weapons = {
           const a = base + (i / (S.n - 1) - 0.5) * spread;
           Bullets.fire(this._owner.x + Math.sin(a) * 1.1, this._owner.z + Math.cos(a) * 1.1,
             a, S.spd, S.dmg * (crit ? this.critMul() : 1),
-            { crit, color: 0xc9a8ff, scale: 0.65, life: 1.0, slow: S.slow, slowK: S.slowK });
+            { crit, color: 0xc9a8ff, scale: 0.65, life: 1.0, slow: S.slow, slowK: S.slowK, dtype: S.dtype });
         }
         Audio2.ionShot();
       }
     }
   },
 
-  pickTargets(n){
+  pickTargets(n, bal){
     const list = Enemies.pool.active;
     const arr = [];
     for (let i = 0; i < list.length; i++){
       const e = list[i];
       const d = Util.dist2(this._owner.x, this._owner.z, e.x, e.z);
-      if (d < 46 * 46) arr.push({ e, d });
+      if (d < 46 * 46) arr.push({ e, d, cap: (Game.mode === 'space' && e.isCapital) ? 1 : 0 });
     }
-    arr.sort((a, b) => a.d - b.d);
+    // 太空战曲射武器：优先打大舰/后排，逼出混合舰队；其余按距离
+    if (Game.mode === 'space' && bal === 'arcing') arr.sort((a, b) => (b.cap - a.cap) || (a.d - b.d));
+    else arr.sort((a, b) => a.d - b.d);
     const out = arr.slice(0, n).map(o => o.e);
     if (!out.length && Boss.active && !Boss.entering) out.push(Boss.asTarget());
     return out;
@@ -4150,7 +4338,7 @@ const Weapons = {
       for (const e of hits){
         if (seen.has(e._pi)) continue;
         seen.add(e._pi);
-        Enemies.damage(e, dmg, crit, e.x, e.z);
+        Enemies.damage(e, dmg, crit, e.x, e.z, false, S.dtype);
       }
       if (Boss.active && Boss.hitTest(px, pz, S.w + 0.9) && !seen.has('boss')){
         seen.add('boss'); Boss.damage(dmg, crit, px, pz);
@@ -4174,6 +4362,7 @@ const Weapons = {
     FX.burst(this._owner.x + dx * 1.6, this._owner.z + dz * 1.6, 0x9df6ff, 4, 4, 1);
   },
 };
+Weapons._stampWeapons();   // 太空战武器分类盖章（energy/kinetic + arcing/direct）
 
 /* ============ 双人支持：按玩家实例化的武器集工厂 ============
    Weapons 本体保留为 P1 的武器集（所有现存 Weapons.xxx 调用等价于 P1）。
@@ -4242,7 +4431,7 @@ const Wingmen = {
     this.group.add(g);
 
     const w = {
-      type, spec: S, g, shipG: built.g, thr,
+      type, spec: S, g, shipG: built.g, thr, faction: 'player',
       x: Player.x, z: Player.z, vx: 0, vz: 0, yaw: 0, cd: Math.random() * S.cd,
       slot: this.list.length, bob: Math.random() * 6,
     };
@@ -4304,6 +4493,15 @@ const Wingmen = {
         }
         tgt = _elite || _best;
       }
+      // 集火标记——优先打玩家锁定的目标（指挥层核心；fleet 模式靠 Game.focus 下达）
+      if (Game.focus && Game.focus.alive){
+        const fd = Util.dist2(w.x, w.z, Game.focus.x, Game.focus.z);
+        if (fd < 46 * 46) tgt = Game.focus;
+      }
+      // 太空战：旗舰指挥光环——母舰附近的友军舰载机射速更快、伤害更高
+      const _inAura = (Game.mode === 'space' && Player._dead === false &&
+        Util.dist2(w.x, w.z, Player.x, Player.z) < (Game.auraR * Game.auraR));
+      const _auraMul = _inAura ? 1.3 : 1;
 
       // 期望位置
       let dx, dz;
@@ -4398,32 +4596,33 @@ const Wingmen = {
       } else if (tgt){
         w.yaw = Util.angLerp(w.yaw, Math.atan2(tgt.x - w.x, tgt.z - w.z), 1 - Math.exp(-10 * dt));
         if (w.cd <= 0){
-          w.cd = w.spec.cd * Weapons.rateMul();
+          w.cd = w.spec.cd * Weapons.rateMul() * (_inAura ? 0.65 : 1);
           const crit = Weapons.rollCrit();
           const mul = crit ? Weapons.critMul() : 1;
+          const DMG = w.spec.dmg * mul * _auraMul;
           const dir = Math.atan2(tgt.x - w.x, tgt.z - w.z);
           if (w.type === 'striker'){
             for (let s = 0; s < 2; s++)
               Bullets.fire(w.x, w.z, dir + (s - 0.5) * 0.1, w.spec.spd,
-                w.spec.dmg * mul, { crit, y: 1.4, color: crit ? 0xffcc33 : 0xffe08a,
+                DMG, { crit, y: 1.4, color: crit ? 0xffcc33 : 0xffe08a,
                   scale: 0.8, life: 1.1 });
           } else if (w.type === 'howitzer'){
-            Bullets.missile(w.x, w.z, w.spec.dmg * mul, tgt,
+            Bullets.missile(w.x, w.z, DMG, tgt,
               { dir, splash: 4.4, crit, spd: 10, scale: 1.25, color: 0xff8a3d, turn: 3.4 });
           } else if (w.type === 'phantom'){
             // 幽灵刺客：高伤穿透直射
-            Bullets.fire(w.x, w.z, dir, w.spec.spd * 0.7, w.spec.dmg * mul,
+            Bullets.fire(w.x, w.z, dir, w.spec.spd * 0.7, DMG,
               { crit, y: 1.5, color: 0xb980ff, scale: 1.25, life: 1.4, pierce: 2 });
           } else if (w.type === 'cruiser'){
             // 护卫舰：双联重型穿透能量弹
             for (let s = 0; s < 2; s++){
               const off = (s - 0.5) * 0.18;
               Bullets.fire(w.x + Math.sin(dir + off) * 1.0, w.z + Math.cos(dir + off) * 1.0,
-                dir + off, w.spec.spd * 0.8, w.spec.dmg * mul,
-                { crit, y: 1.4, color: 0xffb24d, scale: 1.3, life: 1.4, pierce: 2 });
+                dir + off, w.spec.spd * 0.8, DMG,
+                { crit, y: 1.4, color: 0xffb24d, scale: 1.3, life: 1.4, pierce: 2, dtype: 'energy' });
             }
           } else {
-            Bullets.fire(w.x, w.z, dir, w.spec.spd, w.spec.dmg * mul,
+            Bullets.fire(w.x, w.z, dir, w.spec.spd, DMG,
               { crit, y: 1.4, color: w.spec.color, scale: 0.9, life: 0.8 });
           }
           FX.burst(w.x + Math.sin(dir) * 0.9, w.z + Math.cos(dir) * 0.9, w.spec.color, 3, 2, 1.4);
@@ -4465,6 +4664,96 @@ const Wingmen = {
   },
 };
 
+/* ============================ Commands 旗舰指挥技能 ============================ */
+/* 仅太空战（Game.mode==='space'）启用。三大指挥技能：出击波次 / 干扰爆发 / 维修场。 */
+const Commands = {
+  enabled: false,
+  jamT: 0, repairT: 0, _rt: 0,
+  list: [
+    { id:'sortie', name:'出击波次', key:'KeyQ', cd:16, t:0, dur:12, cost:0,  hint:'免费' },
+    { id:'jam',    name:'干扰爆发', key:'KeyE', cd:20, t:0, dur:5,  cost:0,  hint:'免费' },
+    { id:'repair', name:'维修场',   key:'KeyR', cd:24, t:0, dur:6,  cost:0,  hint:'免费' },
+    { id:'call_striker',    name:'突击机群', key:'KeyZ', cd:6,  t:0, cost:18, wtype:'striker',     n:2, hint:'军功' },
+    { id:'call_interceptor', name:'拦截机群', key:'KeyX', cd:5,  t:0, cost:14, wtype:'interceptor', n:2, hint:'军功' },
+    { id:'call_medic',      name:'维修舰',   key:'KeyC', cd:14, t:0, cost:22, wtype:'medic',       n:1, hint:'军功' },
+    { id:'call_cruiser',    name:'护卫舰',   key:'KeyV', cd:18, t:0, cost:45, wtype:'cruiser',     n:1, hint:'军功' },
+  ],
+  _temp: [],
+  reset(){
+    this.enabled = false; this.jamT = 0; this.repairT = 0; this._rt = 0;
+    for (const c of this.list) c.t = 0;
+    this._clearTemp();
+  },
+  enable(){ this.enabled = true; },
+  byKey(code){ return this.list.find(c => c.key === code); },
+  use(id){
+    if (!this.enabled || Game.state !== 'PLAYING') return false;
+    const c = this.list.find(x => x.id === id);
+    if (!c || c.t > 0) return false;
+    const pts = Game.mode === 'space' ? (Game.cmdPoints || 0) : 0;
+    if (c.cost > 0 && pts < c.cost){ HUD.toast('军功不足', '需要 ' + c.cost + ' 军功', '#ff8a3c', 0.8); return false; }
+    c.t = c.cd;
+    if (c.cost > 0) Game.cmdPoints -= c.cost;
+    if (id === 'sortie')      this._sortie(c.dur);
+    else if (id === 'jam')    this._jam(c.dur);
+    else if (id === 'repair') this.repairT = c.dur;
+    else if (c.wtype)         this._callWing(c.wtype, c.n);
+    Audio2.cmd();
+    HUD.cmdUsed(id);
+    return true;
+  },
+  _callWing(type, n){
+    for (let i = 0; i < n; i++) Wingmen.add(type);
+    FX.ring(Player.x, Player.z, 0x6df0ff, 14, 0.6);
+    HUD.toast('舰船支援抵达', (Wingmen.SPEC[type] ? Wingmen.SPEC[type].name : type) + ' ×' + n, '#6df0ff', 1.0);
+  },
+  _sortie(dur){
+    const types = ['striker', 'interceptor', 'striker'];
+    for (const t of types){
+      const w = Wingmen.add(t);
+      if (w){ w._life = dur; this._temp.push(w); }
+    }
+    FX.ring(Player.x, Player.z, 0x6df0ff, 14, 0.6);
+    HUD.toast('舰载机出击', 'SORTIE', '#6df0ff', 1.0);
+  },
+  _jam(dur){
+    this.jamT = dur;
+    const R = 24 * 24;
+    for (const e of Enemies.pool.active){
+      if (e.alive && Util.dist2(Player.x, Player.z, e.x, e.z) < R) e.jamT = Math.max(e.jamT, dur);
+    }
+    FX.ring(Player.x, Player.z, 0xff5ce0, 24, 0.7);
+    HUD.toast('电子干扰', 'JAM', '#ff5ce0', 1.0);
+  },
+  _clearTemp(){
+    for (const w of this._temp){
+      const i = Wingmen.list.indexOf(w);
+      if (i >= 0){ Wingmen.group.remove(w.g); Wingmen.list.splice(i, 1); }
+    }
+    this._temp.length = 0;
+  },
+  update(dt){
+    if (!this.enabled) return;
+    for (const c of this.list) if (c.t > 0) c.t = Math.max(0, c.t - dt);
+    if (this.jamT > 0) this.jamT -= dt;
+    if (this.repairT > 0){
+      this.repairT -= dt;
+      Player.heal(10 * dt);
+      this._rt += dt;
+      if (this._rt >= 0.22){ this._rt = 0; FX.ring(Player.x, Player.z, 0x6dff8b, 9, 0.28); }
+    }
+    for (let i = this._temp.length - 1; i >= 0; i--){
+      const w = this._temp[i]; w._life -= dt;
+      if (w._life <= 0){
+        const k = Wingmen.list.indexOf(w);
+        if (k >= 0){ Wingmen.group.remove(w.g); Wingmen.list.splice(k, 1); }
+        this._temp.splice(i, 1);
+      }
+    }
+    HUD.cmdTick();
+  },
+};
+
 /* ==================== p6_enemies.js ==================== */
 
 /* ============================ Enemies 敌人 ============================ */
@@ -4472,7 +4761,73 @@ const Wingmen = {
 const EFAC = { charger:'scrap', kamikaze:'scrap', splitter:'scrap', brute:'scrap', bomber:'scrap',
                wasp:'void', mender:'void', orbiter:'void', weaver:'void', raptor:'void',
                sniper:'abyss', turret:'abyss', phaser:'abyss', gunship:'abyss' };
-const FAC = { scrap:0xff7a4d, void:0xb060ff, abyss:0x4dffa0 };
+const FAC = { scrap:0xff7a4d, void:0xb060ff, abyss:0xff5c6e };
+
+// 太空战阵营教义：让三方打法迥异（残骸=重甲近战蛮力 / 虚空=电子战+远程狙杀 / 深渊=航母鱼雷群）
+// armorFrac：实弹破甲——物理装甲按最大血量的比例平减，残骸重甲、虚空脆皮、深渊均衡
+const FDOCTRINE = {
+  scrap: { hp:1.30, spd:0.82, dmg:1.15, contact:1.6, ewar:false, armorFrac:0.18, color:'#ff7a4d' }, // 残骸：重甲蛮力、撞击致命
+  void:  { hp:0.78, spd:1.12, dmg:1.05, contact:0.8, ewar:true,  armorFrac:0.02, color:'#b060ff' }, // 虚空：脆皮高机动、会电子战、远程
+  abyss: { hp:1.05, spd:1.04, dmg:1.0,  contact:1.1, ewar:false, armorFrac:0.09, color:'#ff5c6e' }, // 深渊：均衡、航母放机群+鱼雷
+};
+
+/* ============================ 阵营系统（太空战模式用） ============================
+   自由混战：任意不同阵营皆为敌，同阵营为友。幸存者模式全程被 Game.mode 闸门屏蔽，
+   所有敌人统一为 'hostile'，索敌/碰撞仍只打玩家，行为完全不变。 */
+const Faction = {
+  // 扫描所有战斗单位，返回「异阵营」中离 (x,z) 最近者（供 AI 索敌）
+  nearestFoe(x, z, fac){
+    let best = null, bd = Infinity;
+    const act = Enemies.pool.active;
+    for (let i = 0; i < act.length; i++){
+      const o = act[i];
+      if (!o.alive || o.faction === fac) continue;
+      const d = Util.dist2(x, z, o.x, o.z);
+      if (d < bd){ bd = d; best = o; }
+    }
+    // 玩家方单位（玩家母舰 + 舰载机）只作为「非玩家阵营」的攻击目标
+    if (fac !== 'player'){
+      for (const w of Wingmen.list){
+        if (!w || w.x === undefined) continue;
+        const d = Util.dist2(x, z, w.x, w.z);
+        if (d < bd){ bd = d; best = w; }
+      }
+      for (const p of Game.players){
+        if (p._dead) continue;
+        const d = Util.dist2(x, z, p.x, p.z);
+        if (d < bd){ bd = d; best = p; }
+      }
+    }
+    if (Boss.active && Boss.faction !== fac){
+      const d = Util.dist2(x, z, Boss.x, Boss.z);
+      if (d < bd){ bd = d; best = Boss; }
+    }
+    return best;
+  },
+  // 统一伤害路由：玩家→takeDamage；敌方母舰→Boss.damage；常规敌→Enemies.damage
+  hurt(t, dmg){
+    if (!t) return;
+    if (t.takeDamage) t.takeDamage(dmg);
+    else if (t === Boss || t.isBoss) Boss.damage(dmg, false, t.x, t.z);
+    else if (typeof t._pi === 'number') Enemies.damage(t, dmg, false, t.x, t.z);
+  },
+};
+
+/* 太空战三方刷怪池（割草小舰 + 大舰对轰混合；母体=深渊母舰走 Boss） */
+/* 太空战三方刷怪池（按派系纯净分组：池内兵种同属一个 faction，混战才不乱）
+   每阵营都编成「护卫 + 驱逐 + 巡洋 + 战列/炮台 + 航母 + 支援」的完整舰队，而非随机散兵 */
+const SPACE_POOLS = {
+  // 残骸（橙）：重装甲近战流 —— 护卫炮灰 + 驱逐 + 巡洋 + 战列/炮台 + 航母 + 支援
+  scrap: ['charger','kamikaze','splitter','brute','turret','carrier','repair'],
+  // 虚空（紫）：高机动游击流 —— 护卫 + 驱逐 + 巡洋(相位) + 战列 + 航母 + 支援
+  void:  ['wasp','orbiter','weaver','raptor','phaser','carrier','repair'],
+  // 深渊（红）：远程火力流 —— 驱逐 + 巡洋 + 战列/炮台 + 主力舰 + 航母 + 支援
+  abyss: ['sniper','bomber','gunship','turret','warlord','carrier','repair'],
+};
+
+// 太空战「大型舰」分类：移动笨重（降速+低加速度），像主力舰/航母；其余为灵活小舰（割草感更强）
+const SPACE_CAP = { warlord:1, gunship:1, brute:1, sniper:1, turret:1, bomber:1, raptor:1, carrier:1 };
+
 const Enemies = {
   pool: null, group: null, spawnCd: 0,
   _curTint: null,   // 当前星域的统一敌群配色（分裂子代 / BOSS 召唤复用）
@@ -4485,23 +4840,29 @@ const Enemies = {
        深渊军团    : sniper turret phaser(相位折跃者)
      （注：方案中的 spread/buffer/stalker 等新敌种将在后续阶段并入，key 不与武器冲突） */
   SPEC: {
-    charger:  { hp:22,  spd:9.5,  r:0.95, dmg:9,  xp:1, color:CFG.colors.charger,  ai:'chase', variants:['enemy_charger','enemy_sniper','wing_a'] },
-    orbiter:  { hp:34,  spd:8.2,  r:1.05, dmg:7,  xp:2, color:CFG.colors.orbiter,  ai:'orbit', variants:['enemy_orbiter','wing_b'] },
-    sniper:   { hp:26,  spd:6.4,  r:1.00, dmg:12, xp:3, color:CFG.colors.sniper,   ai:'snipe', variants:['enemy_sniper','enemy_charger'] },
-    splitter: { hp:40,  spd:7.4,  r:1.10, dmg:8,  xp:3, color:CFG.colors.splitter, ai:'chase', variants:['enemy_splitter','enemy_orbiter'] },
-    brute:    { hp:150, spd:5.0,  r:1.75, dmg:20, xp:8, color:CFG.colors.brute,    ai:'chase', variants:['enemy_brute','enemy_charger'] },
-    kamikaze: { hp:16,  spd:16,   r:0.8,  dmg:16, xp:2, color:0xff5a3c,            ai:'rush',   variants:['enemy_charger','enemy_sniper'] },
-    turret:   { hp:60,  spd:0,    r:1.10, dmg:10, xp:3, color:0xffa02e,            ai:'turret', variants:['enemy_sniper','enemy_orbiter'] },
-    wasp:     { hp:14,  spd:13,   r:0.7,  dmg:7,  xp:1, color:0xff8a3c,            ai:'chase', variants:['wasp'] },
-    mender:   { hp:50,  spd:7,    r:1.0,  dmg:6,  xp:5, color:0x6dff8b,            ai:'support', variants:['mender'] },
-    phaser:   { hp:30,  spd:7.5,  r:0.9,  dmg:11, xp:3, color:0xc77dff,            ai:'blink', variants:['phaser'] },
-    bomber:   { hp:28,  spd:7.5,  r:0.95, dmg:14, xp:3, color:0xff4422,            ai:'bomber', variants:['proc_bomber'] },
-    weaver:   { hp:30,  spd:9.5,  r:0.9,  dmg:9,  xp:3, color:0x9d6bff,            ai:'weave',  variants:['proc_weaver'] },
+    // —— 舰种分层（tier）参考成熟太空舰队方案：护卫(炮灰/骚扰) → 驱逐(护航/反小舰) → 巡洋(中坚/可修) → 战列(重炮肉盾) → 航母(放舰载机) → 支援(修友军) ——
+    charger:  { hp:22,  spd:9.5,  r:0.95, dmg:9,  xp:1, color:CFG.colors.charger,  ai:'chase',  variants:['enemy_charger','enemy_sniper','wing_a'], tier:'护卫舰' },
+    orbiter:  { hp:34,  spd:8.2,  r:1.05, dmg:7,  xp:2, color:CFG.colors.orbiter,  ai:'orbit',  variants:['enemy_orbiter','wing_b'], tier:'驱逐舰' },
+    sniper:   { hp:26,  spd:6.4,  r:1.00, dmg:12, xp:3, color:CFG.colors.sniper,   ai:'snipe',  variants:['enemy_sniper','enemy_charger'], tier:'驱逐舰' },
+    splitter: { hp:40,  spd:7.4,  r:1.10, dmg:8,  xp:3, color:CFG.colors.splitter, ai:'chase',  variants:['enemy_splitter','enemy_orbiter'], tier:'巡洋舰' },
+    brute:    { hp:150, spd:5.0,  r:1.75, dmg:20, xp:8, color:CFG.colors.brute,    ai:'chase',  variants:['enemy_brute','enemy_charger'], tier:'战列舰' },
+    kamikaze: { hp:16,  spd:16,   r:0.8,  dmg:16, xp:2, color:0xff5a3c,            ai:'rush',   variants:['enemy_charger','enemy_sniper'], tier:'护卫舰' },
+    turret:   { hp:60,  spd:0,    r:1.10, dmg:10, xp:3, color:0xffa02e,            ai:'turret', variants:['enemy_sniper','enemy_orbiter'], tier:'战列舰' },
+    wasp:     { hp:14,  spd:13,   r:0.7,  dmg:7,  xp:1, color:0xff8a3c,            ai:'chase',  variants:['wasp'], tier:'护卫舰' },
+    mender:   { hp:50,  spd:7,    r:1.0,  dmg:6,  xp:5, color:0x6dff8b,            ai:'support', variants:['mender'], tier:'支援舰' },
+    phaser:   { hp:30,  spd:7.5,  r:0.9,  dmg:11, xp:3, color:0xc77dff,            ai:'blink',  variants:['phaser'], tier:'巡洋舰' },
+    bomber:   { hp:28,  spd:7.5,  r:0.95, dmg:14, xp:3, color:0xff4422,            ai:'bomber', variants:['proc_bomber'], tier:'驱逐舰' },
+    weaver:   { hp:30,  spd:9.5,  r:0.9,  dmg:9,  xp:3, color:0x9d6bff,            ai:'weave',  variants:['proc_weaver'], tier:'巡洋舰' },
     // 新增战机（程序化建模，复用现有 AI 行为分支，免新机制）：
-    raptor:   { hp:24,  spd:11.5, r:0.92, dmg:10, xp:3, color:0x4dd2ff,            ai:'weave',  variants:['proc_raptor'], fac:'void' },
-    gunship:  { hp:70,  spd:5.5,  r:1.15, dmg:13, xp:4, color:0xffa02e,            ai:'orbit',  variants:['proc_gunship'], fac:'abyss' },
+    raptor:   { hp:24,  spd:11.5, r:0.92, dmg:10, xp:3, color:0x4dd2ff,            ai:'weave',  variants:['proc_raptor'], fac:'void', tier:'驱逐舰' },
+    gunship:  { hp:70,  spd:5.5,  r:1.15, dmg:13, xp:4, color:0xffa02e,            ai:'orbit',  variants:['proc_gunship'], fac:'abyss', tier:'战列舰' },
     // 小Boss·战帅：独立区域首领（非 BOSS 单例），高血量大体型，环形弹幕 + 蓄力突进，复用敌人机制免新模型
-    warlord:  { hp:820, spd:6.6,  r:2.6,  dmg:26, xp:45, color:0xff2d6d,           ai:'warlord', variants:['enemy_brute','enemy_charger'], fac:'abyss' },
+    warlord:  { hp:820, spd:6.6,  r:2.6,  dmg:26, xp:45, color:0xff2d6d,           ai:'warlord', variants:['enemy_brute','enemy_charger'], fac:'abyss', tier:'主力舰' },
+    // —— 太空战专属职能舰（仅 SPACE_POOLS 引用；幸存者不刷，零回归）——
+    // 航母：放大慢速主力舰，自身轻火力，周期放出舰载机群（不直接交火、靠机群压制）
+    carrier:  { hp:340, spd:4.0,  r:1.9,  dmg:8,  xp:30, color:0x8fa0b8,           ai:'carrier', variants:['proc_gunship','enemy_brute'], fac:'scrap', tier:'航母' },
+    // 维修支援舰：高血慢速，周期修复同阵营友军（复用 support 逻辑），舰队后勤核心
+    repair:   { hp:120, spd:5.5,  r:1.2,  dmg:5,  xp:14, color:0x5dffd0,           ai:'support', variants:['enemy_orbiter','wing_b'], fac:'scrap', tier:'支援舰' },
   },
 
   /* 变异：按波次概率触发，变异直接染敌体发光（不再用地面光环，避免遮挡辨识度）
@@ -4529,13 +4890,17 @@ const Enemies = {
     this.group = new THREE.Group();          // 保留容器，便于整体管理（实例本体直挂 scene）
     World.scene.add(this.group);
     this._pid = 0;
-    this.pool = Pool.create(300, () => ({
+    this.pool = Pool.create(600, () => ({
       x:0, z:0, vx:0, vz:0, yaw:0,
       hp:0, maxHp:0, r:1, spd:0, dmg:0, xp:1, ai:'chase',
-      t:0, fireCd:0, phase:0, hitT:0, slowT:0, slowK:0, elite:false, scale:1,
+      t:0, fireCd:0, phase:0, hitT:0, slowT:0, slowK:0, elite:false, scale:1, jamT:0,
       blinkCd:0, healCd:0,
-      kind:null, modelKey:null, color:0xffffff,
-      alive:false, _pi:0, _ai:0,
+      kind:null, modelKey:null, color:0xffffff, tier:'',
+      alive:false, _pi:0, _ai:0, faction:'hostile',
+      side:null, role:null, cmd:false, order:null, ox:0, oz:0, orderTarget:null, range:0, _acc:7, _cvCd:0,
+      flead:null, foffx:0, foffz:0, capital:false,
+      shield:0, isCapital:false, isFlagship:false, contactMul:1, ewar:false,
+      armor:0, evade:0,
       mut:'', mutT:0, raging:false, spdMul:1, dmgMul:1,
     }));
     // —— 每 variant 模型一个 InstancedMesh：1 变体 = 1 draw call（原多部件 Group 至多 ~4 draw call）——
@@ -4558,15 +4923,15 @@ const Enemies = {
       if (vk !== '__default' && geo === this._defaultGeo && !this._warned[vk]){
         this._warned[vk] = 1; console.warn('[Enemies] Missing enemy geo, fallback icosa: ' + vk);
       }
-      const inst = new THREE.InstancedMesh(geo, bodyMat(), 300);
+      const inst = new THREE.InstancedMesh(geo, bodyMat(), 600);
       inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       inst.frustumCulled = false;
       inst.count = 0;
-      inst.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(300 * 3), 3);
+      inst.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(600 * 3), 3);
       World.scene.add(inst);
       this._insts[vk] = inst;
       // 描边壳：复用同几何，BackSide + 偏大 6%，仅作纯黑轮廓（实例化后丢失的 cel 描边回归）
-      const oinst = new THREE.InstancedMesh(geo, outlineMat, 300);
+      const oinst = new THREE.InstancedMesh(geo, outlineMat, 600);
       oinst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       oinst.frustumCulled = false;
       oinst.count = 0;
@@ -4583,13 +4948,23 @@ const Enemies = {
    * @param scale  体型
    * @param elite  精英
    */
-  spawn(kind, x, z, hpMul, spdMul, scale, elite, tint, allowMut){
+  spawn(kind, x, z, hpMul, spdMul, scale, elite, tint, allowMut, lead, foffx, foffz, facOverride){
     const S = this.SPEC[kind] || this.SPEC.charger;
     if (tint != null) this._curTint = tint;
     const e = this.pool.get();
     if (!e) return null;
     e._pi = ++this._pid;          // 唯一实例 id（供链电/激光/飞锯去重命中）
-    e.kind = kind; e.ai = S.ai;
+    e.kind = kind; e.ai = S.ai; e.tier = S.tier || '';
+    // 太空战：按 EFAC 派系归属（残骸/虚空/深渊）给每个舰船打阵营标；幸存者统一 hostile
+    e.faction = (e.side) ? (facOverride || EFAC[kind] || S.fac || 'scrap') : 'hostile';
+    e.flead = lead || null; e.foffx = foffx || 0; e.foffz = foffz || 0;
+    e.side = null; e.role = null; e.cmd = false; e.order = null; e.ox = 0; e.oz = 0; e.orderTarget = null; e.range = 0; e._cvCd = 0;
+    // 太空战：大舰笨重、小舰灵活（仅影响移动手感，不影响幸存者）
+    e.isCapital = false; e.contactMul = 1; e.ewar = false; e.armor = 0; e.evade = 0;
+    if (e.side && !e.side){
+      if (SPACE_CAP[kind]){ e.spd *= 0.4; e.capital = true; e._acc = 2.4; e.isCapital = true; }
+      else { e.spd *= 1.12; }   // 小舰更灵敏，强化割草体验
+    }
     e.x = x; e.z = z; e.vx = 0; e.vz = 0;
     e.scale = (scale || 1) * (elite ? 1.5 : 1);
     e.r = S.r * e.scale;
@@ -4597,6 +4972,15 @@ const Enemies = {
     e.hp = e.maxHp;
     e.spd = S.spd * (spdMul == null ? 1 : spdMul) * (elite ? 0.82 : 1);
     e.dmg = S.dmg * (elite ? 1.6 : 1);
+    // 太空战阵营教义：让三方打法迥异（残骸重甲蛮力 / 虚空电子战远程 / 深渊航母鱼雷）
+    if (e.side && !e.side){
+      const fd = FDOCTRINE[e.faction] || FDOCTRINE.scrap;
+      e.maxHp = Math.round(e.maxHp * fd.hp); e.hp = e.maxHp;
+      e.spd *= fd.spd; e.dmg *= fd.dmg;
+      e.contactMul = fd.contact; e.ewar = fd.ewar;
+      e.armor = Math.round(e.maxHp * fd.armorFrac); // 实弹破甲：按最大血量比例平减
+      if (e.isCapital) e.shield = Math.round(e.maxHp * 0.5); // 大舰护盾层：先耗盾再耗血
+    }
     e.xp = S.xp * (elite ? 7 : 1);
     e.elite = !!elite;
     // 变异：默认允许（普通刷怪），分裂子代/召唤传 false 防递归
@@ -4608,7 +4992,7 @@ const Enemies = {
       e.hp = e.maxHp;
       e.spdMul *= (M.spd || 1);
     }
-    e.t = Math.random() * 10; e.fireCd = Util.rand(0.6, 2.2);
+    e.t = Math.random() * 10; e.fireCd = Util.rand(0.6, 2.2); e.jamT = 0;
     e.blinkCd = Util.rand(1.4, 3.0) + (e.ai === 'blink' ? 1 : 0);
     e.healCd  = Util.rand(1.5, 3.0) + (e.ai === 'support' ? 1 : 0);
     e.hitT = 0; e.slowT = 0; e.slowK = 0; e.frostLv = 0; e.frostT = 0;
@@ -4619,10 +5003,10 @@ const Enemies = {
     // 机型多样化：从本种类的机型池里随机抽一个（颜色仍按种类，保证威胁辨识度）
     const mk = S.variants[Math.floor(Math.random() * S.variants.length)];
     e.modelKey = mk;
-    // 精英暖金；常规敌人按「兵种本色」S.color，再叠 18% 舰队阵营色（scrap/void/abyss 可辨但兵种本色仍主导）
-    const fac = EFAC[kind];
+    // 太空战：阵营色主导（叠 50%，残骸橙/虚空紫/深渊红可一眼分辨）；幸存者保持纯兵种本色（不叠阵营色）
+    const fac = (e.side) ? (EFAC[kind] || 'scrap') : null;
     const col = elite ? 0xffe0a0
-      : (fac ? (new THREE.Color(S.color)).lerp(new THREE.Color(FAC[fac]), 0.18).getHex() : S.color);
+      : (fac ? (new THREE.Color(S.color)).lerp(new THREE.Color(FAC[fac]), 0.5).getHex() : S.color);
     e.color = col;
     if (elite){
       FX.ring(x, z, 0xffcc33, 4 * e.scale, 0.5);
@@ -4644,12 +5028,19 @@ const Enemies = {
     return out;
   },
 
-  damage(e, dmg, crit, hx, hz, fx){
+  damage(e, dmg, crit, hx, hz, fx, dtype){
     // BOSS 轻量目标桩（Boss.asTarget）没有敌人字段；命中时委托给 Boss.damage，统一走 BOSS 受伤/死亡路径
     if (e && e.isBoss){ Boss.damage(dmg, crit, hx, hz); return; }
     if (!e || !e.alive) return;
     let actual = dmg * Synergy.mods.dmg;
     if (e.frostLv > 0 && e.frostT > 0) actual *= 1.5;   // 冷冻射线：冻结期受伤加成
+    // 护盾层：优先吸收伤害（能量武器以 1.6 倍效率破盾，克制大舰；实弹/动能正常吸收）
+    // 幸存者此前走等价分支（无 dtype → mul=1），行为完全一致；RTS 舰船复用此逻辑
+    if (e.shield > 0){
+      const mul = (e.side && dtype === 'energy') ? 1.6 : 1;
+      const ab = Math.min(e.shield, actual * mul);
+      e.shield -= ab; actual -= ab;
+    }
     e.hp -= actual;
     e.hitT = Math.max(e.hitT, 0.1);
     Game.dmgDealt += actual;
@@ -4679,13 +5070,13 @@ const Enemies = {
     }
   },
 
-  splash(x, z, r, dmg, crit){
+  splash(x, z, r, dmg, crit, dtype){
     if (!r) return;
     const hits = this.queryHit(x, z, r);
     for (const e of hits){
       const d = Math.hypot(e.x - x, e.z - z);
       const f = Util.clamp(1 - d / (r + e.r), 0.35, 1);
-      this.damage(e, dmg * f, crit, e.x, e.z);
+      this.damage(e, dmg * f, crit, e.x, e.z, false, dtype);
     }
   },
 
@@ -4693,11 +5084,24 @@ const Enemies = {
     // 立刻下线，避免「溅射打到正在死的自己 / 旁边的重甲」造成 kill→splash→kill 死循环
     if (!e.alive) return;
     e.alive = false;
+    if (e.side){ this._rtsKill(e); return; }   // RTS 舰船：军功 / 指挥舰判定，跳过幸存者掉落逻辑
     const S = this.SPEC[e.kind];
     FX.explode(e.x, e.z, e.color || S.color, e.elite ? 1.9 : (0.7 + e.scale * 0.4));
     Audio2.kill();
     if (e.elite) World.shake(0.9, 0.26);
     Game.kills++;
+    // 太空战：击杀累积「军功」用于呼叫舰船支援；大舰爆炸更猛；摧毁敌方旗舰=该阵营出局
+    if (e.side){
+      Game.cmdPoints = (Game.cmdPoints || 0) + (e.xp || 1) * 2;
+      if (e.isCapital){ FX.explode(e.x, e.z, 0xffaa55, 3.6); World.shake(2.4, 0.7); if (Audio2.boom) Audio2.boom(); }
+      if (e.isFlagship && e.faction && Game.spaceFactions && Game.spaceFactions[e.faction]){
+        Game.spaceFactions[e.faction].alive = false;
+        Game.spaceFactions[e.faction].flagship = null;
+        const fa = Game.spaceFactions;
+        if (!fa.scrap.alive && !fa.void.alive && !fa.abyss.alive) Game.over(true);
+        else HUD.toast('敌方旗舰被摧毁', (e.faction) + ' 阵营出局', '#ffcc33', 1.8);
+      }
+    }
 
     // 掉经验
     const v = e.xp;
@@ -4727,7 +5131,7 @@ const Enemies = {
       FX.ring(e.x, e.z, 0xff7a2f, 9, 0.5);
       this.blastQ.push(e.x, e.z, 6.5, 26);
       const _tp = Game.nearestPlayer(e.x, e.z);
-      if (_tp && Util.dist2(e.x, e.z, _tp.x, _tp.z) < 42) _tp.takeDamage(Game.hell ? _tp.maxHp * CFG.hell.collideMul : 10);
+      if (_tp && Util.dist2(e.x, e.z, _tp.x, _tp.z) < 42) _tp.takeDamage(Game.hell ? _tp.maxHp * CFG.hell.collideMul : 10 * (e.contactMul || 1));
     } else if (e.kind === 'bomber'){
       const r = 5.5 * e.scale, d = 20 * e.scale;
       FX.ring(e.x, e.z, 0xff4422, r, 0.5);
@@ -4768,6 +5172,7 @@ const Enemies = {
     this.pool.each(e => {
       e.t += dt;
       if (e.hitT > 0) e.hitT -= dt;
+      if (e.side){ this.rtsAI(e, dt); return; }   // RTS 舰船：走独立指挥 AI（玩家下令 / 异 side 索敌）
       // 瘫痪（EMP 鱼雷）：定身期间不主动移动/不攻击，仅衰减惯性并仍可被击退
       if (e.stun > 0){
         e.stun -= dt;
@@ -4776,9 +5181,30 @@ const Enemies = {
         Util.clampArena(e, e.r);
         return;
       }
+      // 太空战残血撤退（紧急避险）：大型舰血量过低时向玩家方反方向撤离，制造"打不死龟"博弈（幸存者跳过）
+      if (e.side && e.isCapital){
+        if (e._evade <= 0 && e.hp / e.maxHp < 0.22){
+          e._evade = 3.6; FX.ring(e.x, e.z, 0xffcc33, e.r * 3, 0.5);
+          if (e.alive) HUD.toast('敌方旗舰撤退！', '', '#ffcc33', 0.8);
+        }
+        if (e._evade > 0){
+          e._evade -= dt;
+          const flee = Game.nearestPlayer(e.x, e.z) || { x: e.x, z: e.z };
+          const fdx = e.x - flee.x, fdz = e.z - flee.z, fd = Math.hypot(fdx, fdz) || 1;
+          const sp = e.spd * (e.spdMul || 1) * 3.0;
+          const k = 1 - Math.exp(-(e._acc || 7) * dt);
+          e.vx += ((fdx / fd) * sp - e.vx) * k; e.vz += ((fdz / fd) * sp - e.vz) * k;
+          e.x += e.vx * dt; e.z += e.vz * dt; Util.clampArena(e, e.r);
+          e.yaw = Math.atan2(e.vx, e.vz);
+          return false;
+        }
+      }
       let sk = 1;
-      const tp = Game.nearestPlayer(e.x, e.z);
+      // 太空战：索敌最近异阵营（其他 AI 阵营 + 玩家母舰/舰载机）；幸存者仍是最近玩家
+      const tp = (e.side) ? Faction.nearestFoe(e.x, e.z, e.faction) : Game.nearestPlayer(e.x, e.z);
       const px = tp ? tp.x : e.x, pz = tp ? tp.z : e.z;
+      // 接触伤害目标：太空战专门锁定玩家方（母舰/僚机），避免异阵营互相"撞玩家"误伤逻辑
+      const pfoe = (e.side) ? Game.nearestPlayer(e.x, e.z) : tp;
       if (e.slowT > 0){ e.slowT -= dt; sk = 1 - e.slowK; }
 
       /* ---- 变异持续效果 ---- */
@@ -4810,11 +5236,11 @@ const Enemies = {
         // 固定炮台：原地不动，缓慢转向并周期射击
         ax = 0; az = 0;
         e.yaw = Math.atan2(dx, dz);
-        e.fireCd -= dt;
+        e.fireCd -= dt * (e.jamT > 0 ? 0.5 : 1);
         if (e.fireCd <= 0 && dist < 40 && Game.state === 'PLAYING'){
           e.fireCd = Util.rand(1.4, 2.2);
           Bullets.enemyFire(e.x, e.z, Math.atan2(dx, dz), 26, e.dmg * (e.dmgMul || 1) * (e.mut === 'berserk' && e.raging ? 1.8 : 1),
-            { color: 0xffc04d, scale: 0.8, life: 4 });
+            { color: 0xffc04d, scale: 0.8, life: 4, fac: e.faction });
           FX.burst(e.x, e.z, 0xffc04d, 4, 3, 0.9);
         }
       } else if (e.ai === 'orbit'){
@@ -4825,24 +5251,24 @@ const Enemies = {
         ax = (dx / dist) * radial * 1.8 - (dz / dist) * tang;
         az = (dz / dist) * radial * 1.8 + (dx / dist) * tang;
         const l = Math.hypot(ax, az) || 1; ax /= l; az /= l;
-        e.fireCd -= dt;
+        e.fireCd -= dt * (e.jamT > 0 ? 0.5 : 1);
         if (e.fireCd <= 0 && dist < 26 && Game.state === 'PLAYING'){
           e.fireCd = Util.rand(1.6, 2.6);
-          Bullets.enemyFire(e.x, e.z, toP, 22, e.dmg * (e.dmgMul || 1) * (e.mut === 'berserk' && e.raging ? 1.8 : 1), { color: 0xb980ff, scale: 0.9 });
+          Bullets.enemyFire(e.x, e.z, toP, 22, e.dmg * (e.dmgMul || 1) * (e.mut === 'berserk' && e.raging ? 1.8 : 1), { color: 0xb980ff, scale: 0.9, fac: e.faction });
         }
       } else if (e.ai === 'snipe'){
         // 远则靠近，近则后撤；停稳后打高速弹
         const want = 19;
         const k = dist > want + 3 ? 1 : (dist < want - 4 ? -1 : 0);
         ax = (dx / dist) * k; az = (dz / dist) * k;
-        e.fireCd -= dt;
+        e.fireCd -= dt * (e.jamT > 0 ? 0.5 : 1);
         if (e.fireCd <= 0 && dist < 34 && Game.state === 'PLAYING'){
           e.fireCd = Util.rand(2.2, 3.4);
           // 预判玩家速度
           const lead = dist / 40;
           const tx = px + tp.vx * lead, tz = pz + tp.vz * lead;
           const a = Math.atan2(tx - e.x, tz - e.z);
-          Bullets.enemyFire(e.x, e.z, a, 40, e.dmg * (e.dmgMul || 1) * (e.mut === 'berserk' && e.raging ? 1.8 : 1), { color: 0x4dd2ff, scale: 0.75, life: 3 });
+          Bullets.enemyFire(e.x, e.z, a, 40, e.dmg * (e.dmgMul || 1) * (e.mut === 'berserk' && e.raging ? 1.8 : 1), { color: 0x4dd2ff, scale: 0.75, life: 3, fac: e.faction });
           FX.burst(e.x, e.z, 0x4dd2ff, 4, 3, 0.9);
         }
       } else if (e.ai === 'support'){
@@ -4893,43 +5319,85 @@ const Enemies = {
         ax = (dx / dist) * radial * 1.6 - (dz / dist) * 1.0;
         az = (dz / dist) * radial * 1.6 + (dx / dist) * 1.0;
         const l = Math.hypot(ax, az) || 1; ax /= l; az /= l;
-        e.fireCd -= dt;
+        e.fireCd -= dt * (e.jamT > 0 ? 0.5 : 1);
         if (e.fireCd <= 0 && dist < 30 && Game.state === 'PLAYING'){
           e.fireCd = Util.rand(1.8, 2.8);
           const base = Math.atan2(dx, dz);
           const ed = e.dmg * (e.dmgMul || 1) * (e.mut === 'berserk' && e.raging ? 1.8 : 1);
           for (let b = 0; b < 3; b++){
             const a = base + (b - 1) * 0.14;
-            Bullets.enemyFire(e.x, e.z, a, 30, ed, { color: 0x9d6bff, scale: 0.8, life: 3 });
+            Bullets.enemyFire(e.x, e.z, a, 30, ed, { color: 0x9d6bff, scale: 0.8, life: 3, fac: e.faction });
           }
           FX.burst(e.x, e.z, 0x9d6bff, 5, 3, 0.9);
         }
       } else if (e.ai === 'warlord'){
-        // 战帅（小Boss）：缓慢逼近，周期环形弹幕 + 蓄力突进
-        ax = dx / dist * 0.7; az = dz / dist * 0.7;
-        if (e.chargeT > 0){
-          e.chargeT -= dt;
-          ax = Math.sin(e.yaw); az = Math.cos(e.yaw);   // 突进方向锁定
-          if (tp && Util.dist2(e.x, e.z, tp.x, tp.z) < (e.r + CFG.player.radius) ** 2)
-            tp.takeDamage(Game.hell ? tp.maxHp * CFG.hell.collideMul : 22);
-        } else {
+        if (e.side){
+          // 太空战：战帅 = 缓慢炮台舰（主力舰级）。不冲脸，缓慢逼近，远距离环形弹幕压制整片战线
+          ax = dx / dist * 0.2; az = dz / dist * 0.2;
           e.yaw = Math.atan2(dx, dz);
-          e.fireCd -= dt; e.chargeCd -= dt;
-          if (e.fireCd <= 0 && dist < 46 && Game.state === 'PLAYING'){
-            e.fireCd = 3.2;
-            const n = 16;
+          e.fireCd -= dt * (e.jamT > 0 ? 0.5 : 1);
+          if (e.fireCd <= 0 && dist < 60 && Game.state === 'PLAYING'){
+            e.fireCd = 4.2;
+            const n = 18;
             for (let i = 0; i < n; i++){
               const a = i / n * Util.TAU + e.t * 0.5;
               Bullets.enemyFire(e.x + Math.sin(a) * e.r, e.z + Math.cos(a) * e.r, a, 18,
-                e.dmg * 0.5 * (e.dmgMul || 1), { color: 0xff2d6d, scale: 1.1, life: 5 });
+                e.dmg * 0.5 * (e.dmgMul || 1), { color: 0xff2d6d, scale: 1.1, life: 5, fac: e.faction });
             }
             FX.ring(e.x, e.z, 0xff2d6d, e.r * 2.6, 0.5);
           }
-          if (e.chargeCd <= 0){
-            e.chargeCd = 7.5; e.chargeT = 0.9;
-            HUD.toast('战帅突进！', '', '#ff2d6d', 0.6); World.shake(1.0, 0.25);
+        } else {
+          // 幸存者：缓慢逼近，周期环形弹幕 + 蓄力突进（原逻辑不变）
+          ax = dx / dist * 0.7; az = dz / dist * 0.7;
+          if (e.chargeT > 0){
+            e.chargeT -= dt;
+            ax = Math.sin(e.yaw); az = Math.cos(e.yaw);   // 突进方向锁定
+            if (pfoe && Util.dist2(e.x, e.z, pfoe.x, pfoe.z) < (e.r + CFG.player.radius) ** 2)
+              pfoe.takeDamage(Game.hell ? pfoe.maxHp * CFG.hell.collideMul : 22 * (e.contactMul || 1));
+          } else {
+            e.yaw = Math.atan2(dx, dz);
+            e.fireCd -= dt * (e.jamT > 0 ? 0.5 : 1); e.chargeCd -= dt;
+            if (e.fireCd <= 0 && dist < 46 && Game.state === 'PLAYING'){
+              e.fireCd = 3.2;
+              const n = 16;
+              for (let i = 0; i < n; i++){
+                const a = i / n * Util.TAU + e.t * 0.5;
+                Bullets.enemyFire(e.x + Math.sin(a) * e.r, e.z + Math.cos(a) * e.r, a, 18,
+                  e.dmg * 0.5 * (e.dmgMul || 1), { color: 0xff2d6d, scale: 1.1, life: 5, fac: e.faction });
+              }
+              FX.ring(e.x, e.z, 0xff2d6d, e.r * 2.6, 0.5);
+            }
+            if (e.chargeCd <= 0){
+              e.chargeCd = 7.5; e.chargeT = 0.9;
+              HUD.toast('战帅突进！', '', '#ff2d6d', 0.6); World.shake(1.0, 0.25);
+            }
           }
         }
+      } else if (e.ai === 'carrier'){
+        // 航母：太空战专属职能舰。缓慢主力舰（几乎不动，像浮空平台），自身轻火力，
+        // 周期放出舰载机群（短距 dogfight），构成「不直接交火但放飞机」的航母职能
+        ax = dx / dist * 0.12; az = dz / dist * 0.12;
+        e.yaw = Math.atan2(dx, dz);
+        e.fireCd -= dt * (e.jamT > 0 ? 0.5 : 1);
+        if (e.fireCd <= 0 && Game.state === 'PLAYING'){
+          e.fireCd = 5.5;
+          const hk = Game.hpMulAt(Game.wave) * 0.6;     // 舰载机为轻量版，按波次缩放
+          const fk = Util.pick(['wasp','charger','kamikaze']);
+          const n = 2 + Math.floor(Math.random() * 2);
+          for (let i = 0; i < n; i++){
+            if (Enemies.pool.count >= 600) break;       // 受总容量保护，安全不爆池
+            const a = Math.random() * Util.TAU, rr = 4 + Math.random() * 3;
+            Enemies.spawn(fk, e.x + Math.cos(a) * rr, e.z + Math.sin(a) * rr,
+              hk, 1, 1, false, null, false, null, 0, 0, e.faction);
+          }
+          FX.ring(e.x, e.z, 0x8fa0b8, e.r * 2.2, 0.5);
+        }
+      }
+
+      /* ---- 太空战编队聚合：小舰随领队维持阵型，形成成建制舰队 ---- */
+      if (e.side && e.flead && e.flead.alive){
+        const fx = e.flead.x + e.foffx, fz = e.flead.z + e.foffz;
+        ax += (fx - e.x) * 0.05; az += (fz - e.z) * 0.05;
       }
 
       /* ---- 敌我分离：防止叠成一坨（炮台固定不动，跳过）---- */
@@ -4968,7 +5436,7 @@ const Enemies = {
       }
 
       const sp = e.spd * (e.spdMul || 1) * (e.mut === 'berserk' && e.raging ? 1.25 : 1) * sk;
-      const k = 1 - Math.exp(-7 * dt);
+      const k = 1 - Math.exp(-(e._acc || 7) * dt);
       e.vx += (ax * sp - e.vx) * k;
       e.vz += (az * sp - e.vz) * k;
       e.x += e.vx * dt; e.z += e.vz * dt;
@@ -4987,30 +5455,31 @@ const Enemies = {
         }
       }
 
-      /* ---- 撞击玩家（目标为最近玩家） ---- */
+      /* ---- 撞击玩家方（母舰/僚机） ---- */
       const pr = CFG.player.radius + e.r;
-      if (dist < pr && Game.state === 'PLAYING' && tp){
+      const pdist = (e.side) ? (pfoe ? Math.hypot(e.x - pfoe.x, e.z - pfoe.z) : Infinity) : dist;
+      if (pdist < pr && Game.state === 'PLAYING' && pfoe){
         // 地狱模式：撞击伤害 = 玩家总血量 × 1/4（用户要求）；常规模式沿用兵种伤害
-        const dmg = Game.hell ? tp.maxHp * CFG.hell.collideMul
-                               : e.dmg * (e.dmgMul || 1) * (e.mut === 'berserk' && e.raging ? 1.8 : 1);
+        const dmg = (Game.hell ? pfoe.maxHp * CFG.hell.collideMul
+                               : e.dmg * (e.dmgMul || 1) * (e.mut === 'berserk' && e.raging ? 1.8 : 1)) * (e.jamT > 0 ? 0.5 : 1);
         if (e.kind === 'kamikaze'){
           // 自杀冲锋：撞上即引爆，自身摧毁
-          tp.takeDamage(dmg);
+          pfoe.takeDamage(dmg);
           FX.explode(e.x, e.z, 0xff5a3c, 1.4);
           World.shake(1.2, 0.3);
           this.kill(e);
         } else if (e.kind === 'bomber'){
           // 爆裂体：接触即引爆
-          tp.takeDamage(dmg);
+          pfoe.takeDamage(dmg);
           FX.explode(e.x, e.z, 0xff4422, 1.6);
           World.shake(1.0, 0.28);
           this.kill(e);          // kill 里走 blastQ 做范围爆裂
         } else {
-          tp.takeDamage(dmg);
+          pfoe.takeDamage(dmg);
           const a = Math.atan2(e.x - px, e.z - pz);
           e.vx = Math.sin(a) * 16; e.vz = Math.cos(a) * 16;
         }
-        if (e.mut === 'toxic') tp.applyPoison(3, 2.5);
+        if (e.mut === 'toxic') pfoe.applyPoison(3, 2.5);
       }
 
       /* ---- 表现（位置/朝向/受击闪白统一留到 _flush 写 InstancedMesh 矩阵与 instanceColor）---- */
@@ -5062,6 +5531,128 @@ const Enemies = {
       const oinst = this._outline[k];
       if (oinst && oinst.count > 0) oinst.instanceMatrix.needsUpdate = true;
     }
+  },
+
+  /* ============================ RTS 舰船（太空战重做） ============================
+     所有 RTS 舰船（玩家方 + 敌方派系）都进同一对象池，靠 side 区分阵营、role 区分舰种。
+     渲染复用 _flush（按 modelKey 写实例矩阵），移动/索敌/开火走 rtsAI。幸存者零改动。*/
+  RTSPEC: {
+    corvette:  { hp:60,   spd:15,  r:0.85, range:17, dmg:7,  cd:0.45, color:0x35e0ff, variant:'wing_a',       scale:0.95 },
+    destroyer: { hp:150,  spd:10,  r:1.05, range:24, dmg:13, cd:0.85, color:0x35e0ff, variant:'enemy_orbiter', scale:1.15 },
+    cruiser:   { hp:320,  spd:7,   r:1.45, range:32, dmg:28, cd:1.5,  color:0x35e0ff, variant:'proc_gunship', scale:1.5 },
+    carrier:   { hp:460,  spd:4.5, r:1.9,  range:15, dmg:6,  cd:2.6,  color:0x35e0ff, variant:'enemy_brute',   scale:1.9 },
+    command:   { hp:1100, spd:5,   r:2.4,  range:28, dmg:20, cd:1.1,  color:0x38f0ff, variant:'enemy_brute',   scale:2.4 },
+  },
+
+  spawnRTS(side, role, x, z, opts){
+    opts = opts || {};
+    const S = this.RTSPEC[role] || this.RTSPEC.corvette;
+    const e = this.pool.get(); if (!e) return null;
+    e._pi = ++this._pid;
+    e.kind = role; e.ai = 'rts';
+    e.tier = (role === 'command' ? '指挥舰' : role === 'carrier' ? '航母' : role === 'cruiser' ? '巡洋舰' : role === 'destroyer' ? '驱逐舰' : '护卫舰');
+    e.faction = side; e.side = side; e.role = role;
+    e.cmd = !!opts.cmd;
+    e.order = null; e.ox = 0; e.oz = 0; e.orderTarget = null;
+    e.x = x; e.z = z; e.vx = 0; e.vz = 0;
+    e.scale = S.scale; e.r = S.r;
+    e.maxHp = S.hp; e.hp = S.hp;
+    e.spd = S.spd; e.dmg = S.dmg; e.range = S.range;
+    e.fireCd = Util.rand(0.2, S.cd);
+    e.shield = e.cmd ? Math.round(S.hp * 0.4) : (role === 'cruiser' || role === 'carrier' ? Math.round(S.hp * 0.25) : 0);
+    e.armor = 0; e.evade = 0; e._acc = e.cmd ? 3.4 : 6.5;
+    e.isCapital = (role === 'carrier' || role === 'command');
+    e.color = (side === 'me') ? S.color : (RTS.SIDE_COLORS[side] || 0xff7a4d);
+    e.modelKey = S.variant;
+    e.mut = ''; e.elite = false; e.frostLv = 0; e.frostT = 0; e.slowT = 0; e.slowK = 0; e.stun = 0; e._cvCd = 0;
+    e.yaw = Math.random() * Util.TAU; e.t = Math.random() * 10;
+    e.alive = true;
+    return e;
+  },
+
+  rtsFoe(e){
+    let best = null, bd = Infinity;
+    const act = this.pool.active;
+    for (let i = 0; i < act.length; i++){
+      const o = act[i]; if (!o.alive || !o.side || o.side === e.side) continue;
+      const d = Util.dist2(e.x, e.z, o.x, o.z);
+      if (d < bd){ bd = d; best = o; }
+    }
+    return best;
+  },
+
+  rtsCommand(){
+    const act = this.pool.active;
+    for (let i = 0; i < act.length; i++){ const o = act[i]; if (o.alive && o.side === 'me' && o.cmd) return o; }
+    return null;
+  },
+
+  rtsFire(e, foe){
+    const a = Math.atan2(foe.x - e.x, foe.z - e.z);
+    const col = (e.side === 'me') ? 0x9df6ff : (RTS.SIDE_COLORS[e.side] || 0xff7a4d);
+    Bullets.enemyFire(e.x + Math.sin(a) * e.r * 0.6, e.z + Math.cos(a) * e.r * 0.6, a, 36, e.dmg,
+      { color: col, scale: 0.8, life: 3, fac: e.side });
+    if (Math.random() < 0.5) FX.burst(e.x, e.z, col, 3, 2, 0.7);
+  },
+
+  rtsAI(e, dt){
+    if (e.stun > 0){ e.stun -= dt; e.vx *= Math.exp(-4 * dt); e.vz *= Math.exp(-4 * dt); e.x += e.vx * dt; e.z += e.vz * dt; Util.clampArena(e, e.r); return; }
+    let ax = 0, az = 0, sk = 1;
+    if (e.slowT > 0){ e.slowT -= dt; sk = 1 - e.slowK; }
+    if (e.frostT > 0) e.frostT -= dt;
+    const foe = (e.order === 'attack' && e.orderTarget && e.orderTarget.alive) ? e.orderTarget : this.rtsFoe(e);
+    // 移动指令
+    if (e.order === 'move'){
+      const dx = e.ox - e.x, dz = e.oz - e.z, d = Math.hypot(dx, dz);
+      if (d < 1.5) e.order = null;
+      else { ax = dx / d; az = dz / d; }
+    }
+    const inRange = foe && Math.hypot(foe.x - e.x, foe.z - e.z) <= e.range + 2;
+    if (foe){
+      const dx = foe.x - e.x, dz = foe.z - e.z, d = Math.hypot(dx, dz) || 1;
+      if (e.order === 'attack'){
+        const want = e.range * 0.82;
+        if (d > want){ ax += dx / d; az += dz / d; }
+        else e.yaw = Math.atan2(dx, dz);
+      } else if (inRange){ e.yaw = Math.atan2(dx, dz); }
+      e.fireCd -= dt * sk;
+      if (e.fireCd <= 0 && inRange && Game.state === 'PLAYING'){
+        e.fireCd = (this.RTSPEC[e.role] ? this.RTSPEC[e.role].cd : 1) * (0.85 + Math.random() * 0.3);
+        this.rtsFire(e, foe);
+      }
+    } else if (e.order !== 'move' && e.side !== 'me'){
+      const cmd = this.rtsCommand();
+      if (cmd){ const dx = cmd.x - e.x, dz = cmd.z - e.z, d = Math.hypot(dx, dz) || 1; ax = dx / d * 0.4; az = dz / d * 0.4; }
+    }
+    // 航母周期放出舰载机（压制）
+    if (e.role === 'carrier'){
+      e._cvCd -= dt;
+      if (e._cvCd <= 0 && this.pool.count < 580){
+        e._cvCd = 7;
+        const a = Math.random() * Util.TAU;
+        this.spawnRTS(e.side, 'corvette', e.x + Math.cos(a) * 5, e.z + Math.sin(a) * 5, {});
+      }
+    }
+    // 敌我分离
+    const near = Grid.query(e.x, e.z, e.r * 2.4);
+    for (let i = 0; i < near.length; i++){
+      const o = near[i]; if (o === e || !o.alive) continue;
+      const ddx = e.x - o.x, ddz = e.z - o.z, d2 = ddx*ddx + ddz*ddz, rr = (e.r + o.r) * 0.9;
+      if (d2 < rr * rr && d2 > 0.0001){ const d = Math.sqrt(d2); ax += ddx / d * (1 - d / rr); az += ddz / d * (1 - d / rr); }
+    }
+    const sp = e.spd * sk;
+    const k = 1 - Math.exp(-(e._acc || 7) * dt);
+    e.vx += (ax * sp - e.vx) * k; e.vz += (az * sp - e.vz) * k;
+    e.x += e.vx * dt; e.z += e.vz * dt; Util.clampArena(e, e.r);
+    e.yaw = Util.angLerp(e.yaw, Math.atan2(e.vx, e.vz) || e.yaw, 1 - Math.exp(-8 * dt));
+    if (e.hitT > 0) e.hitT -= dt;
+  },
+
+  _rtsKill(e){
+    FX.explode(e.x, e.z, e.color || 0xffffff, e.cmd ? 4 : (0.7 + e.scale * 0.4));
+    Audio2.kill();
+    if (e.cmd) World.shake(2.0, 0.6);
+    if (typeof RTS !== 'undefined' && RTS.onKill) RTS.onKill(e);
   },
 
   clear(){
@@ -5400,6 +5991,7 @@ const Boss = {
 
   spawn(round, variant){
     this.active = true; this.entering = true;
+    this.faction = (Game.mode === 'space') ? (this.variant === 'B' ? 'void' : 'abyss') : 'hostile';
     this.phase = 1;
     this.round = round || 0;
     // 第二形态随机：A=深渊母舰 NYX-Ω（粉），B=虚空巨像 VOID-Ξ（青/紫，更大，专属震荡波）
@@ -5555,7 +6147,7 @@ const Boss = {
       for (let i = 0; i < n; i++){
         const a = i / n * Util.TAU + off;
         Bullets.enemyFire(this.x + Math.sin(a) * this.r, this.z + Math.cos(a) * this.r,
-          a, P2 ? 20 : 16, 11, { color: this.tint, scale: 1.15, life: 5 });
+          a, P2 ? 20 : 16, 11, { color: this.tint, scale: 1.15, life: 5, fac: this.faction });
       }
       FX.ring(this.x, this.z, this.tint, this.r * 2.4, 0.35);
       Audio2.tone(90, 0.2, 'sawtooth', 0.1, 40);
@@ -5569,7 +6161,7 @@ const Boss = {
       for (let i = 0; i < n; i++){
         const a = base + (i - (n - 1) / 2) * 0.19;
         Bullets.enemyFire(this.x, this.z, a, 30, 13,
-          { color: this.tint2, scale: 0.95, life: 4 });
+          { color: this.tint2, scale: 0.95, life: 4, fac: this.faction });
       }
       FX.burst(this.x, this.z, 0xffcc33, 8, 6, 2);
     }
@@ -5606,7 +6198,7 @@ const Boss = {
         for (let i = 0; i < arms; i++){
           const a = this.spiralAng + i / arms * Util.TAU;
           Bullets.enemyFire(this.x + Math.sin(a) * this.r, this.z + Math.cos(a) * this.r,
-            a, P2 ? 18 : 15, 10, { color: this.tint2, scale: 1.0, life: 5 });
+            a, P2 ? 18 : 15, 10, { color: this.tint2, scale: 1.0, life: 5, fac: this.faction });
         }
       }
       if (this.spiralT <= 0) this.spiralCd = P2 ? 7 : 10;
@@ -6137,7 +6729,15 @@ const HUD = {
       kDash: id('kDash'), kForm: id('kForm'), kPause: id('kPause'),
       btnSettings: id('btnSettings'), btnSettingsMenu: id('btnSettingsMenu'), btnSettingsClose: id('btnSettingsClose'),
       btnHell: id('btnHell'), diffChip: id('diffChip'), diffTxt: id('diffTxt'),
-      btnCoop: id('btnCoop'),
+      btnCoop: id('btnCoop'), btnSpace: id('btnSpace'),
+      cmdBar: id('cmdBar'), cmd0: id('cmd0'), cmd1: id('cmd1'), cmd2: id('cmd2'),
+      cmd3: id('cmd3'), cmd4: id('cmd4'), cmd5: id('cmd5'), cmd6: id('cmd6'),
+      cmdPts: id('cmdPts'), ewarTint: id('ewarTint'),
+      hpWrap: id('hpWrap'),
+      forceBar: id('forceBar'), fbScrap: id('fbScrap'), fbScrapN: id('fbScrapN'),
+      fbVoid: id('fbVoid'), fbVoidN: id('fbVoidN'), fbAbyss: id('fbAbyss'), fbAbyssN: id('fbAbyssN'),
+      fbMe: id('fbMe'), fbMeN: id('fbMeN'),
+      shipLegend: id('shipLegend'),
       hpWrap2: id('hpWrap2'), hpBar2: id('hpBar2'), hpTxt2: id('hpTxt2'),
       luSub: id('luSub'), help: id('help'),
     };
@@ -6145,11 +6745,25 @@ const HUD = {
     this.el.btnStart.addEventListener('click', () => { Audio2.init(); Audio2.resume(); Game.start(false, false, Game._coopSel); });
     this.el.btnEndless.addEventListener('click', () => { Audio2.init(); Audio2.resume(); Game.start(true, false, Game._coopSel); });
     this.el.btnHell.addEventListener('click', () => { Audio2.init(); Audio2.resume(); Game.start(false, true, Game._coopSel); });
+    // 新模式：舰队指挥（fleet）—— 暂停下令 / 阵型 / 集火 / 技能，摧毁敌方旗舰即胜
+    this.el.btnSpace.addEventListener('click', () => { Audio2.init(); Audio2.resume(); Game.start(false, false, false, 'fleet'); });
+    // 缠斗空战 / 星图战役：M1/M3 待做，菜单点击提示「开发中」
+    const _toastSoon = (t) => () => HUD.toast(t, '模式开发中 · 敬请期待', '#ffcc33', 1.6);
+    document.getElementById('btnArena').addEventListener('click', _toastSoon('缠斗空战'));
+    document.getElementById('btnCampaign').addEventListener('click', _toastSoon('星图战役'));
     // 双人开关：菜单里点一下切换，作为下次开局的偏好保留
     this.el.btnCoop.addEventListener('click', () => {
       Game._coopSel = !Game._coopSel;
       this.el.btnCoop.classList.toggle('on', Game._coopSel);
       this.el.btnCoop.textContent = Game._coopSel ? '👥 双人模式 · 开' : '👥 双人模式';
+    });
+    // 指挥技能按钮（仅太空战显示并生效）——按 Commands.list 顺序绑定全部 7 个
+    const cbtns = [this.el.cmd0, this.el.cmd1, this.el.cmd2, this.el.cmd3, this.el.cmd4, this.el.cmd5, this.el.cmd6];
+    Commands.list.forEach((c, i) => {
+      const b = cbtns[i]; if (!b) return;
+      c._btn = b; c._cover = b.querySelector('.cdc'); c._lab = b.querySelector('.cdt'); c._cost = b.querySelector('.cc');
+      if (c._cost) c._cost.textContent = c.cost > 0 ? c.cost : '免费';
+      b.addEventListener('click', () => Commands.use(c.id));
     });
     this.el.btnSound.addEventListener('click', () => {
       const muted = Audio2.toggleMute();
@@ -6298,7 +6912,8 @@ const HUD = {
     // 生命
     const hp = Util.clamp(Player.hp / Player.maxHp * 100, 0, 100);
     e.hpBar.style.width = hp + '%';
-    e.hpTxt.textContent = Math.ceil(Player.hp) + ' / ' + Math.round(Player.maxHp);
+    e.hpTxt.textContent = (e.hpWrap.classList.contains('mother') ? '母舰 ' : '') +
+      Math.ceil(Player.hp) + ' / ' + Math.round(Player.maxHp);
     // 第二玩家生命（仅双人显示）
     if (Game.coop && !Player2._dead && e.hpWrap2){
       const hp2 = Util.clamp(Player2.hp / Player2.maxHp * 100, 0, 100);
@@ -6312,6 +6927,21 @@ const HUD = {
     e.kill.textContent = Game.kills;
     const el = Math.max(1, Game.time);
     e.dps.textContent = Math.round(Game.dmgDealt / el);
+    // 太空战：四方兵力条（残骸/虚空/深渊/我方），实时统计活跃舰船阵营分布
+    if (Game.mode === 'space' && e.forceBar){
+      let s = 0, v = 0, a = 0;
+      const act = Enemies.pool.active;
+      for (let i = 0; i < act.length; i++){
+        const o = act[i]; if (!o.alive) continue;
+        if (o.faction === 'scrap') s++; else if (o.faction === 'void') v++; else if (o.faction === 'abyss') a++;
+      }
+      const me = Wingmen.list.length + (Player._dead ? 0 : 1);
+      const tot = Math.max(1, s + v + a + me);
+      e.fbScrap.style.width = (s / tot * 100) + '%';  e.fbScrapN.textContent = s;
+      e.fbVoid.style.width  = (v / tot * 100) + '%';  e.fbVoidN.textContent = v;
+      e.fbAbyss.style.width = (a / tot * 100) + '%';  e.fbAbyssN.textContent = a;
+      e.fbMe.style.width    = (me / tot * 100) + '%'; e.fbMeN.textContent = me;
+    }
   },
 
   setFps(v){ this.el.fps.textContent = Math.round(v); },
@@ -6362,6 +6992,30 @@ const HUD = {
   setDifficulty(hell){
     if (!this.el.diffChip) return;
     this.el.diffChip.style.display = hell ? 'flex' : 'none';
+  },
+
+  cmdUsed(id){ const c = Commands.list.find(x => x.id === id); if (c && c._btn){ c._btn.classList.add('fire'); setTimeout(() => { if (c._btn) c._btn.classList.remove('fire'); }, 180); } },
+  cmdTick(){
+    const bar = this.el.cmdBar; if (!bar) return;
+    bar.classList.toggle('hide', !Commands.enabled);
+    if (!Commands.enabled) return;
+    const pts = Game.mode === 'space' ? (Game.cmdPoints || 0) : 0;
+    if (this.el.cmdPts) this.el.cmdPts.textContent = '军功 ' + Math.floor(pts);
+    for (const c of Commands.list){
+      if (!c._btn) continue;
+      const ready = c.t <= 0;
+      c._btn.classList.toggle('cd', !ready);
+      c._btn.classList.toggle('poor', c.cost > 0 && pts < c.cost);
+      if (c._cover) c._cover.style.height = (ready ? 0 : (c.t / c.cd * 100)) + '%';
+      if (c._lab)   c._lab.textContent = ready ? '' : Math.ceil(c.t);
+    }
+  },
+  /** 虚空阵营电子战：屏幕紫调干扰层 */
+  ewar(t){
+    if (!this.el.ewarTint) return;
+    this.el.ewarTint.classList.add('on');
+    clearTimeout(this._ewt);
+    this._ewt = setTimeout(() => { if (this.el.ewarTint) this.el.ewarTint.classList.remove('on'); }, (t || 4) * 1000);
   },
 
   /** 双人 UI：显示/隐藏第二玩家血条，并切换操作提示（P1 方向键 / P2 WASD） */
@@ -6421,6 +7075,11 @@ const HUD = {
   showLevelUp(player){
     const cards = player.progress.cards;
     const e = this.el;
+    // 防御：shell 缺升级界面 DOM（旧版/部署错位）时，安全跳过而非打断游戏循环
+    if (!e.levelup || !e.luLv || !e.luSub || !e.cards){
+      console.warn('[HUD] showLevelUp 缺少必要 DOM 元素，已跳过升级界面（请确认 shell 含 #levelup/#luLv/#luSub/#cards）');
+      return;
+    }
     const tag = player.id === 2 ? 'P2' : 'P1';
     e.luLv.textContent = tag + ' · LV.' + player.progress.level;
     e.luSub.textContent = tag + ' 升级 · 选择一项强化（战斗已暂停）';
@@ -6467,15 +7126,16 @@ const HUD = {
     }
   },
 
-  showResult(win){
+  showResult(win, ov){
     const e = this.el;
-    e.sKick.textContent = win ? 'MISSION COMPLETE' : 'SHIP DESTROYED';
-    e.sTitle.textContent = win ? '任务达成' : '舰船损毁';
+    ov = ov || {};
+    e.sKick.textContent = ov.kick || (win ? 'MISSION COMPLETE' : 'SHIP DESTROYED');
+    e.sTitle.textContent = ov.title || (win ? '任务达成' : '舰船损毁');
     e.sTitle.style.background = win
       ? 'linear-gradient(180deg,#ffffff,#ffcc33 55%,#c98a10)'
       : 'linear-gradient(180deg,#ffffff,#ff3d7f 55%,#8a1038)';
     e.sTitle.style.webkitBackgroundClip = 'text';
-    e.sSub.textContent = win ? '深渊母舰已被击毁' : '你的残骸漂向深空…';
+    e.sSub.textContent = ov.sub || (win ? '深渊母舰已被击毁' : '你的残骸漂向深空…');
     e.rTime.textContent = Util.fmtTime(Game.time);
     e.rKill.textContent = Game.kills;
     e.rLv.textContent = Progress.level;
@@ -6485,6 +7145,7 @@ const HUD = {
     e.howto.classList.add('hide');
     e.shipRow.classList.add('hide');
     e.btnStart.textContent = '再来一次';
+    e.btnEndless.classList.toggle('hide', !win);
     e.btnEndless.classList.toggle('hide', !win);
     e.btnMenuR.classList.remove('hide');
     e.overlay.classList.remove('hide');
@@ -6500,6 +7161,7 @@ const Game = {
   endless: false, bossSpawned: false, bossRound: 0, hell: false,
   coop: false,                          // 双人模式开关（本次开局是否双人）
   coopSel: false,                      // 菜单双人开关偏好（持久到下一次开局）
+  mode: 'survivor',                    // 游戏模式：'survivor' 幸存者 / 'space' 太空战（多方博弈）
   players: [Player],                   // 当前参战玩家（双人时含 Player2）
   _levelQueue: [],                     // 待处理升级的玩家队列（双人各自独立升级）
   _levelPlayer: null,                  // 当前正在选卡的玩家
@@ -6555,10 +7217,11 @@ const Game = {
   },
 
   /* ---------------- 开局 / 重开 ---------------- */
-  start(endless, hell, coop){
+  start(endless, hell, coop, mode){
     this.endless = !!endless;
     this.hell = !!hell;
     this.coop = !!coop;
+    this.mode = mode || 'survivor';
     this._levelQueue = []; this._levelPlayer = null; this._camZoom = 1;
     this.time = 0; this.wave = 1; this.kills = 0; this.dmgDealt = 0;
     this.bossSpawned = false; this.bossRound = 0;
@@ -6571,6 +7234,7 @@ const Game = {
     FX.reset();
     Wingmen.clear();
     Boss.clear();
+    Commands.reset();
     Weapons.reset();
     Weapons2.reset();
     // 先定机型，再让 Progress 依机型天赋/初始武器初始化（顺序很关键）
@@ -6578,6 +7242,16 @@ const Game = {
     Player.reset();
     Progress.reset();
     Player._dead = false;
+    World.setSpaceMode(false);
+    Player.group.scale.setScalar(1.0);
+    Player._spaceMove = 1; Player._spaceAccel = 1;                 // 幸存者/新模式：恢复正常灵活手感
+    if (Player.auraRing) Player.auraRing.visible = false;
+    if (this.focusRing) this.focusRing.visible = false;
+    HUD.el.hpWrap.classList.remove('mother');
+    HUD.el.forceBar.classList.add('hide');
+    HUD.el.shipLegend.classList.add('hide');
+    HUD.el.cmdBar.classList.add('hide');
+    if (this.mode && Modes[this.mode]) Modes[this.mode].init();   // 新模式（舰队指挥等）入场初始化
     if (this.coop){
       Player2.setShip(this.shipIdx);
       Player2.reset();
@@ -6622,6 +7296,10 @@ const Game = {
     this.state = 'GAMEOVER';
     Audio2.stopMusic();
     HUD.hideLevelUp();
+    if (this.mode && Modes[this.mode] && Modes[this.mode].over){
+      Modes[this.mode].over(win);          // 新模式自行处理结算呈现（内部调 HUD.showResult）
+      return;
+    }
     if (win){ Audio2.win(); HUD.toast('任务达成', '', '#ffcc33', 2); }
     else {
       Audio2.lose();
@@ -6652,6 +7330,12 @@ const Game = {
 
   /** 从暂停或结算返回主菜单 */
   toMenu(){
+    Commands.reset();
+    this.focus = null;
+    if (this.focusRing) this.focusRing.visible = false;
+    if (Player.auraRing) Player.auraRing.visible = false;
+    if (HUD.el.forceBar) HUD.el.forceBar.classList.add('hide');
+    if (HUD.el.cmdBar) HUD.el.cmdBar.classList.add('hide');
     this.state = 'MENU';
     Audio2.stopMusic();
     HUD.hideLevelUp();
@@ -6756,9 +7440,11 @@ const Game = {
 
   spawnRing(){
     const c = this.spawnCenter();
-    // 玩家周围环形，尽量落在场内
-    for (let i = 0; i < 8; i++){
-      const a = Math.random() * Util.TAU, r = Util.rand(31, 43);
+    // 太空战战场更大：出生环半径拉远，呈现宏大纵深
+    const rMax = (this.mode === 'space') ? 60 : 43;
+    const rMin = (this.mode === 'space') ? 46 : 31;
+    for (let i = 0; i < 10; i++){
+      const a = Math.random() * Util.TAU, r = Util.rand(rMin, rMax);
       const x = c.x + Math.cos(a) * r, z = c.z + Math.sin(a) * r;
       if (Math.hypot(x, z) < CFG.arena - 2) return { x, z };
     }
@@ -6767,6 +7453,7 @@ const Game = {
   },
 
   director(dt){
+    if (this.mode === 'space') return this._directorSpaceSurvivor(dt);
     const S = this.waveSpec(this.wave);
     Enemies._curTint = this.stageTint || null;
     this.spawnCd -= dt;
@@ -6799,6 +7486,45 @@ const Game = {
     }
   },
 
+  /* 太空幸存者刷怪导演：复用全部幸存者循环，仅换太空敌种与节奏（玩家开一艘飞船割草） */
+  _directorSpaceSurvivor(dt){
+    const S = this.waveSpec(this.wave);
+    Enemies._curTint = null;                  // 太空敌种保持各自兵种本色
+    this.spawnCd -= dt;
+    if (this.spawnCd > 0) return;
+    this.spawnCd = S.interval;
+    // 太空要塞（WARLORD）：高波次每 5 波来一头独立首领，BOSS 战期间不刷
+    if (this.wave >= 8 && this.wave % 5 === 0 && !Boss.active &&
+        !Enemies.pool.active.some(e => e.kind === 'warlord' && e.alive)){
+      const p = this.spawnRing();
+      Enemies.spawn('warlord', p.x, p.z, S.hpMul, S.spdMul, 2.4, false, null);
+      HUD.toast('太空要塞来袭', 'WARLORD · 区域首领', '#ff2d6d', 1.6);
+    }
+    if (Enemies.pool.count >= S.cap) return;
+    // BOSS 战期间减压
+    const per = Boss.active ? Math.max(1, Math.floor(S.per * 0.4)) : S.per;
+    // 太空敌种池：无人机群 / 突击战机 / 炮艇 / 陨石 / 狙击 / 精英巨舰
+    const SPACE_KINDS = ['drone','wasp','gunner','gunship','turret','swarm','brute','sniper','weaver'];
+    for (let i = 0; i < per; i++){
+      const p = this.spawnRing();
+      const kind = Util.pick(SPACE_KINDS);
+      const elite = Math.random() < S.elite;
+      if (kind === 'wasp'){
+        // 蜂群：一次吐一小簇，制造数量压力
+        const n = 3 + (this.wave >= 6 ? 1 : 0);
+        for (let k = 0; k < n; k++)
+          Enemies.spawn('wasp', p.x + Util.rand(-2.6, 2.6), p.z + Util.rand(-2.6, 2.6),
+            S.hpMul, S.spdMul, 1, false, null);
+      } else {
+        Enemies.spawn(kind, p.x, p.z, S.hpMul, S.spdMul, 1, elite, null);
+      }
+    }
+  },
+
+  /* (已移除：旧 RTS 太空战「旗舰 + 护航」逻辑，推倒重做为太空幸存者) */
+
+  /* (已移除：旧 RTS 太空战「舰队会战」逻辑，推倒重做为太空幸存者) */
+
   /* ---------------- 帧循环 ---------------- */
   frame(now){
     const raw = (now - this.last) / 1000;
@@ -6815,6 +7541,7 @@ const Game = {
     if (this.state === 'PLAYING'){
       this.time += dt;
 
+      if (!this.mode || !Modes[this.mode]){
       // 波次推进（由时间驱动，便于外部调 time 快进）
       const w = Math.floor(this.time / CFG.waveSec) + 1;
       if (w !== this.wave){
@@ -6839,7 +7566,7 @@ const Game = {
       }
 
       Input.update();
-      for (const p of this.players){
+      for (const p of this.players){          // 太空幸存者：玩家战机始终参与（与幸存者一致）
         if (p._dead) continue;
         p.update(dt);
         p.weapons.update(dt);
@@ -6852,6 +7579,8 @@ const Game = {
       Loot.update(dt);
       Asteroids.update(dt);
       this.director(dt);
+    }
+    else { Modes[this.mode].frame(dt); }
     }
 
     // 特效/相机/UI 始终推进，暂停时画面也不僵死
@@ -6866,6 +7595,7 @@ const Game = {
         zoom = 1 + Math.min(0.9, md / 34);
       }
     }
+    // 太空幸存者：镜头跟随玩家战机（与幸存者一致）
     World.updateCamera(dt, camX, camZ, zoom);
     World.ambT += dt;                                  // 环境动画时钟（菜单也在走）
     if (World.stars) World.stars.rotation.y += dt * 0.004;
@@ -6915,6 +7645,299 @@ function boot(){
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
 else boot();
+
+/* ==================== p9_modes.js ==================== */
+/* =====================================================================
+ * 新模式框架 M0 + 舰队指挥 v1 (fleet)
+ * 设计依据：星陨幸存者/太空战新模式_设计文档.md
+ * 原则：全部复用现有引擎（对象池/InstancedMesh/Wingmen/Boss/director/HUD），
+ *       只在本文件内新增「规则层」。survivor 代码零改动。
+ * 入口：Game.mode = 'fleet' → Game.frame 分派到 Modes.fleet.frame；
+ *       Game.over 分派到 Modes.fleet.over。
+ * ===================================================================== */
+'use strict';
+
+/* ---------- 限定范围种子（仅模式下需要确定性处使用，不动全局 Math.random）---------- */
+(function(){
+  let _seed = null, _s = 0;
+  function hashStr(s){ let h = 2166136261; for (let i = 0; i < s.length; i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+  Util.setSeed = function(s){ _seed = s; _s = (typeof s === 'string' ? hashStr(s) : (s >>> 0)); };
+  Util.srand = function(a, b){
+    if (_seed == null) return Util.rand(a, b);          // 未设种子：回退普通随机，全局行为不变
+    _s = (_s + 0x6D2B79F5) | 0;                         // mulberry32
+    let t = Math.imul(_s ^ (_s >>> 15), 1 | _s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    const r = ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    return a + r * (b - a);
+  };
+  Util.clearSeed = function(){ _seed = null; };
+})();
+
+/* ---------- 计分 / 排行榜（每模式 top5，localStorage）---------- */
+const Score = {
+  KEY: 'sts_scores',
+  record(mode, score, meta){
+    try {
+      const all = JSON.parse(localStorage.getItem(this.KEY) || '{}');
+      const arr = all[mode] = all[mode] || [];
+      arr.push({ score: Math.round(score), t: Date.now(), win: !!(meta && meta.win) });
+      arr.sort((a, b) => b.score - a.score);
+      all[mode] = arr.slice(0, 5);
+      localStorage.setItem(this.KEY, JSON.stringify(all));
+    } catch (e) { /* localStorage 不可用时静默 */ }
+  },
+  top(mode){
+    try { return (JSON.parse(localStorage.getItem(this.KEY) || '{}')[mode]) || []; } catch (e) { return []; }
+  },
+};
+
+/* =====================================================================
+ * 模式注册表：每个模式 = init / reset / frame / over 四件套
+ * ===================================================================== */
+const Modes = {
+  /* 缠斗空战（arena）—— M1 待做，先占位，菜单点击提示「开发中」 */
+  arena:    { id: 'arena',    title: '缠斗空战', init(){}, reset(){}, frame(){}, over(){} },
+  /* 星图战役（campaign）—— M3 待做，先占位 */
+  campaign: { id: 'campaign', title: '星图战役', init(){}, reset(){}, frame(){}, over(){} },
+
+  /* 舰队指挥（fleet）—— 本版落地 */
+  fleet: {
+    energy: 100, eMax: 100, eRegen: 1.5,
+    eflag: null, eflagSpawned: false,
+    wave: 0, waveT: 0, spawnCd: 1.5,
+    paused: false, _over: false,
+    focus: null,
+    skills: [
+      { key: 'Q', name: '护盾墙',   cost: 30, cd: 10, cdT: 0, color: '#38f0ff' },
+      { key: 'E', name: '火力齐射', cost: 40, cd: 12, cdT: 0, color: '#ffcc33' },
+      { key: 'R', name: '紧急跃迁', cost: 35, cd: 14, cdT: 0, color: '#9df6ff' },
+    ],
+    _hud: null, _bound: false,
+
+    reset(){
+      this.energy = this.eMax; this.eflag = null; this.eflagSpawned = false;
+      this.wave = 0; this.waveT = 0; this.spawnCd = 1.5;
+      this.paused = false; this._over = false; this.focus = null;
+      for (const s of this.skills) s.cdT = 0;
+      Game.focus = null;
+      if (this._hud) { this._hud.remove(); this._hud = null; }
+    },
+
+    init(){
+      this.reset();
+      World.setSpaceMode(false);
+      Player.group.scale.setScalar(1.0);
+      Player.maxHp = 400; Player.hp = 400;            // 你的旗舰：座舰，沉没即败
+      Player.shieldLayer = 0; Player._spaceMove = 1; Player._spaceAccel = 1;
+      if (Player.auraRing) Player.auraRing.visible = false;
+      if (Game.focusRing) Game.focusRing.visible = false;
+      HUD.el.hpWrap.classList.remove('mother');
+      HUD.el.forceBar.classList.add('hide');
+      HUD.el.shipLegend.classList.add('hide');
+      HUD.el.cmdBar.classList.add('hide');
+
+      // 友舰：6 艘，复用 Wingmen（自带楔形/环绕/横列三态队形 + 自主索敌）
+      Wingmen.clear();
+      const comp = ['interceptor', 'interceptor', 'cruiser', 'cruiser', 'medic', 'bulwark'];
+      for (const t of comp) Wingmen.add(t);
+      Wingmen.formation = 0; Wingmen.behavior = 'follow';
+
+      this._buildHud();
+      this._bindInput();
+      HUD.toast('舰队指挥', '摧毁敌方旗舰 · WASD 机动 · 1/2/3 阵型 · 右键集火', '#8fc6ff', 2.2);
+    },
+
+    /* ---------------- 帧模拟（由 Game.frame 在 PLAYING 下分派）---------------- */
+    frame(dt){
+      if (this._over) return;
+      if (this.paused) return;                         // 暂停下指令：冻结战斗
+      this.waveT += dt;
+      this.energy = Math.min(this.eMax, this.energy + this.eRegen * dt);
+      for (const s of this.skills) if (s.cdT > 0) s.cdT = Math.max(0, s.cdT - dt);
+
+      this._director(dt);
+
+      Input.update();                                  // 驱动旗舰 WASD 机动
+      if (!Player._dead){
+        Player.update(dt);
+        Player.weapons.update(dt);                     // 旗舰自动炮塔开火
+      }
+      Wingmen.update(dt);
+      Enemies.update(dt);
+      Boss.update(dt);
+      Bullets.update(dt);
+
+      if (Game.focus && !Game.focus.alive) Game.focus = null;
+
+      if (Player._dead){ this._end(false); return; }   // 旗舰沉没 = 败
+      // 胜：敌方旗舰（Boss）被摧毁 → Boss.die 内部 setTimeout 已触发 Game.over(true)
+      this._hudUpdate();
+    },
+
+    /* 三波敌舰队：W1 6 艘 / W2 8 艘含支援 / W3 敌旗舰 + 4 护航 */
+    _director(dt){
+      this.spawnCd -= dt;
+      if (this.spawnCd > 0) return;
+      const EA = 46;                                   // 出生在远端（敌方半场）
+      const ring = () => { const a = Math.random() * Util.TAU; const r = Util.rand(34, 44); return { x: Math.cos(a) * r, z: Math.sin(a) * r }; };
+
+      if (this.wave === 0 && this.waveT > 1.2){
+        this.wave = 1; this.spawnCd = 14;
+        const comp = ['drone', 'drone', 'gunner', 'gunner', 'charger', 'charger'];
+        for (const k of comp){ const p = ring(); Enemies.spawn(k, p.x, p.z, 1, 1, 1, false, null); }
+        HUD.toast('敌舰队接触', 'WAVE 1 · 6 艘', '#ff8866', 1.1);
+      } else if (this.wave === 1 && this.waveT > 16){
+        this.wave = 2; this.spawnCd = 16;
+        const comp = ['drone', 'drone', 'gunner', 'gunner', 'charger', 'charger', 'orbiter', 'orbiter'];
+        for (const k of comp){ const p = ring(); Enemies.spawn(k, p.x, p.z, 1, 1, 1, false, null); }
+        HUD.toast('敌增援抵达', 'WAVE 2 · 8 艘', '#ff8866', 1.1);
+      } else if (this.wave === 2 && this.waveT > 34){
+        this.wave = 3; this.spawnCd = 9999;
+        // 敌旗舰（弱化 Boss，HP 3000，3 座可破坏炮塔）
+        Boss.spawn(0, 'A');
+        Boss.maxHp = 3000; Boss.hp = 3000; HUD.setBoss(1);
+        this.eflag = Boss; this.eflagSpawned = true;
+        const esc = ['drone', 'gunner', 'charger', 'orbiter'];
+        for (const k of esc){ const p = ring(); Enemies.spawn(k, p.x, p.z, 1, 1, 1, false, null); }
+        HUD.toast('敌方旗舰出击', 'ENEMY FLAGSHIP · 击破即胜', '#ff3d7f', 2.0);
+        World.shake(1.0, 0.5);
+      }
+
+      // 维持战场压力：旗舰战期间持续少量补员
+      if (this.wave === 3 && this.spawnCd > 999 && Math.random() < dt * 0.25){
+        if (Enemies.pool.count < 60){ const p = ring(); Enemies.spawn(Util.pick(['drone', 'gunner', 'charger']), p.x, p.z, 1, 1, 1, false, null); }
+      }
+    },
+
+    /* ---------------- 指令层（键鼠）---------------- */
+    _bindInput(){
+      if (this._bound) return; this._bound = true;
+      const cv = World.renderer.domElement;
+      cv.addEventListener('contextmenu', (e) => { if (Game.mode === 'fleet') e.preventDefault(); });
+      cv.addEventListener('pointerdown', (e) => { if (Game.mode === 'fleet' && e.button === 2) this._setFocus(e.clientX, e.clientY); });
+      addEventListener('keydown', (e) => this._onKey(e));
+    },
+
+    _onKey(e){
+      if (Game.mode !== 'fleet' || this._over) return;
+      if (e.code === 'Space'){ this.paused = !this.paused; HUD.toast(this.paused ? '指挥暂停' : '继续战斗', this.paused ? '下达指令 · 再按空格继续' : '', '#ffcc33', 0.9); e.preventDefault(); return; }
+      if (e.code === 'Digit1'){ Wingmen.formation = 0; Wingmen.behavior = 'follow';  HUD.toast('楔形阵', '全队伤 +15%', '#38f0ff', 0.7); return; }
+      if (e.code === 'Digit2'){ Wingmen.formation = 1; Wingmen.behavior = 'guard';   HUD.toast('环形阵', '受击 -15%', '#38f0ff', 0.7); return; }
+      if (e.code === 'Digit3'){ Wingmen.formation = 2; Wingmen.behavior = 'free';    HUD.toast('横列阵', '射速 +10%', '#38f0ff', 0.7); return; }
+      if (e.code === 'KeyQ'){ this._useSkill(0); return; }
+      if (e.code === 'KeyE'){ this._useSkill(1); return; }
+      if (e.code === 'KeyR'){ this._useSkill(2); return; }
+    },
+
+    _setFocus(cx, cy){
+      const w = this._screenToWorld(cx, cy);
+      let best = null, bd = 8 * 8;
+      for (const e of Enemies.pool.active){
+        if (!e.alive) continue;
+        const d = Util.dist2(e.x, e.z, w.x, w.z);
+        if (d < bd){ bd = d; best = e; }
+      }
+      if (best){ Game.focus = best; HUD.toast('集火锁定', best.kind || '敌方单位', '#ff5c6e', 0.8); }
+      else { Game.focus = null; }
+    },
+
+    _screenToWorld(cx, cy){
+      const cam = World.camera;
+      const v = new THREE.Vector3((cx / innerWidth) * 2 - 1, -(cy / innerHeight) * 2 + 1, 0.5);
+      v.unproject(cam);
+      const dir = v.sub(cam.position).normalize();
+      const t = -cam.position.y / dir.y;
+      return { x: cam.position.x + dir.x * t, z: cam.position.z + dir.z * t };
+    },
+
+    _useSkill(i){
+      if (this._over) return;
+      const s = this.skills[i];
+      if (this.energy < s.cost || s.cdT > 0){ HUD.toast('技能未就绪', s.cost > this.energy ? '能量不足' : '冷却中', '#ff6b6b', 0.7); return; }
+      this.energy -= s.cost; s.cdT = s.cd;
+      if (i === 0){                                       // 护盾墙：维修 + 短暂撑盾
+        Player.hp = Math.min(Player.maxHp, Player.hp + 60);
+        Player._invulnT = Math.max(Player._invulnT || 0, 3);
+        FX.ring(Player.x, Player.z, 0x38f0ff, 30, 0.6);
+        HUD.toast('护盾墙展开', '维修 +60 · 撑盾 3s', '#38f0ff', 0.9);
+      } else if (i === 1){                               // 火力齐射：覆盖伤害
+        let n = 0;
+        for (const e of Enemies.pool.active){ if (!e.alive) continue; if (Util.dist2(e.x, e.z, Player.x, Player.z) < 44 * 44){ Enemies.damage(e, 70, false, e.x, e.z); n++; } }
+        if (this.eflagSpawned && Boss.active) Boss.damage(70, false, Boss.x, Boss.z);
+        if (typeof FX.flash === 'function') FX.flash(0xffcc33, 0.4);
+        HUD.toast('火力齐射', '覆盖 ' + n + ' 目标', '#ffcc33', 0.9);
+      } else if (i === 2){                               // 紧急跃迁：旗舰冲刺 reposition
+        Player.x += Math.cos(Player.yaw) * 9; Player.z += Math.sin(Player.yaw) * 9;
+        Player._invulnT = Math.max(Player._invulnT || 0, 2);
+        FX.ring(Player.x, Player.z, 0x9df6ff, 22, 0.5);
+        HUD.toast('紧急跃迁', '指挥舰闪避', '#9df6ff', 0.9);
+      }
+      if (typeof Audio2 !== 'undefined' && Audio2.pulse) Audio2.pulse();
+    },
+
+    /* ---------------- HUD（舰队专属，自建 DOM，不碰 p1）---------------- */
+    _buildHud(){
+      const root = document.createElement('div');
+      root.id = 'fleetHud';
+      root.style.cssText = 'position:absolute;left:50%;bottom:14px;transform:translateX(-50%);z-index:22;display:flex;flex-direction:column;align-items:center;gap:6px;pointer-events:none;font-family:inherit';
+      root.innerHTML =
+        '<div style="display:flex;gap:8px;align-items:center;background:rgba(8,16,30,.74);border:1px solid rgba(90,170,255,.35);border-radius:10px;padding:6px 12px">' +
+          '<span style="font-size:11px;letter-spacing:.1em;color:#9fe8ff">能量</span>' +
+          '<div style="width:160px;height:10px;border-radius:6px;background:rgba(0,0,0,.5);overflow:hidden"><div id="fhEnergy" style="width:100%;height:100%;background:linear-gradient(90deg,#0a7a9a,#38f0ff);transition:width .1s"></div></div>' +
+          '<span id="fhWave" style="font-size:11px;color:#ffcc33;min-width:64px;text-align:right">WAVE 0</span>' +
+        '</div>' +
+        '<div id="fhSkills" style="display:flex;gap:8px"></div>' +
+        '<div id="fhForm" style="font-size:10px;color:#cfe3f2;letter-spacing:.08em">阵型：楔形跟随 · 右键集火 · 空格暂停下令</div>';
+      document.body.appendChild(root);
+      const sk = root.querySelector('#fhSkills');
+      this.skills.forEach((s, i) => {
+        const b = document.createElement('div');
+        b.style.cssText = 'width:84px;height:40px;border-radius:9px;border:1px solid ' + s.color + '55;background:linear-gradient(180deg,rgba(16,38,72,.7),rgba(9,20,42,.7));color:#cfe6ff;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;pointer-events:auto;cursor:pointer;font-family:inherit';
+        b.innerHTML = '<span style="font-size:11px;font-weight:700">' + s.key + ' ' + s.name + '</span><span class="cd" style="font-size:10px;color:#ffd24a">就绪</span>';
+        b.addEventListener('click', () => this._useSkill(i));
+        sk.appendChild(b); s._el = b;
+      });
+      this._hud = root;
+    },
+
+    _hudUpdate(){
+      if (!this._hud) return;
+      const e = this._hud.querySelector('#fhEnergy'); if (e) e.style.width = (this.energy / this.eMax * 100) + '%';
+      const w = this._hud.querySelector('#fhWave'); if (w) w.textContent = 'WAVE ' + this.wave + (this.paused ? ' · 暂停' : '');
+      for (const s of this.skills){
+        if (!s._el) continue;
+        const cd = s._el.querySelector('.cd');
+        if (s.cdT > 0){ s._el.style.opacity = '0.6'; if (cd) cd.textContent = s.cdT.toFixed(0) + 's'; }
+        else { s._el.style.opacity = (this.energy >= s.cost) ? '1' : '0.45'; if (cd) cd.textContent = '就绪'; }
+      }
+    },
+
+    _end(win){
+      if (this._over) return;
+      this._over = true;
+      const score = Game.kills * 100 + (win ? 2000 : 0) + Math.round(Game.time * 2);
+      Score.record('fleet', score, { win });
+      if (this._hud){ this._hud.remove(); this._hud = null; }
+      if (typeof Audio2 !== 'undefined'){ try { win ? (Audio2.win && Audio2.win()) : (Audio2.lose && Audio2.lose()); } catch (e) {} }
+      HUD.showResult(win, {
+        kick: win ? 'ENEMY FLAGSHIP DESTROYED' : 'YOUR FLAGSHIP LOST',
+        sub: win ? '敌方旗舰核心熔毁 · 星域归于你手' : '指挥核心失联，残存舰载机漂向深空…',
+      });
+    },
+
+    over(win){ this._end(win); },
+  },
+};
+
+/* 让 Player 的 _invulnT 在舰队模式下生效（仅拦截玩家受伤，survivor 无此字段默认不触发）
+   注意：真实受伤入口是 Player.takeDamage(n)，不是 Player.damage */
+(function(){
+  const _pd = Player.takeDamage;
+  Player.takeDamage = function(n){
+    if (Game.mode === 'fleet' && this._invulnT > 0) return;     // 跃迁/撑盾期免伤
+    return _pd.call(this, n);
+  };
+})();
 
 </script>
 </body>
