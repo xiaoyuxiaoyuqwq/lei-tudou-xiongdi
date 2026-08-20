@@ -1,0 +1,20 @@
+# 星苍战线(独立项目,不随星陨幸存者发布)
+/星苍战线截图/
+/星苍战线_原型.html
+/星苍战线_策划书.md
+
+# 备份与历史快照
+/build_bak_*/
+/index_bak_*.html
+/build_inst_bak/
+
+# 调试/临时文件
+/_dbg.mjs
+/_game_extract.js
+/s2_debug.js
+/tools/*.png
+/tools/_probe.mjs
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
